@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "renquant-common"
+version = "0.1.0"
+description = "Shared RenQuant contracts and pipeline primitives."
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{name = "RenQuant"}]
+dependencies = []
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
