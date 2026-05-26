@@ -1,0 +1,28 @@
+schema_version: 1
+name: renquant-common
+role: shared pipeline primitives and contracts
+operating_model: https://github.com/hallovorld/RenQuant/blob/main/doc/arch/subrepo-operating-model.md
+repo_map: RENQUANT_REPOS.md
+pipeline_required: true
+branch_policy:
+  main: stable interface for downstream repos and automation
+  feature_branches: experiments, optimizations, and large upgrades
+source_repo:
+  name: RenQuant
+  never_delete: true
+dependencies: []
+owns:
+  - Task/Job/Pipeline primitives
+  - small shared schemas and contracts
+  - common testing fixtures
+forbidden:
+  - broker execution
+  - model training frameworks
+  - LEAN/backtesting runtime
+  - strategy-specific policy
+  - raw data or artifacts
+automation:
+  test: make test
+  doctor: make doctor
+outputs:
+  - python package renquant_common

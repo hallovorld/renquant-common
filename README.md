@@ -2,6 +2,17 @@
 
 Shared contracts and small framework primitives for RenQuant.
 
+Operating model: https://github.com/hallovorld/RenQuant/blob/main/doc/arch/subrepo-operating-model.md
+
+Repository map: [RENQUANT_REPOS.md](RENQUANT_REPOS.md)
+
+Local automation:
+
+```bash
+make test
+make doctor
+```
+
 This repo is intentionally boring. It contains domain-neutral building blocks
 that every other RenQuant repo can depend on without pulling in model training,
 broker execution, LEAN, Torch, XGBoost, data files, or artifacts.
