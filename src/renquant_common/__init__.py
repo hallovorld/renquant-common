@@ -1,5 +1,20 @@
 """Shared RenQuant contracts and pipeline primitives."""
 
+from .contracts import (
+    AcceptanceReport,
+    ArtifactManifest,
+    DecisionTraceRow,
+    OOSEvidence,
+    PooledMetric,
+    RegimeLabel,
+    RegimeMetric,
+    SCORER_ENTRY_POINT_GROUP,
+    Scorer,
+    ScorerKindNotRegistered,
+    Tier,
+    load_scorer,
+    validate_regime_params,
+)
 from .pipeline import (
     Job,
     ParallelTimeoutError,
@@ -9,13 +24,38 @@ from .pipeline import (
     Task,
     run_parallel,
 )
+from .purged_cv import (
+    CombinatorialPurgedCV,
+    PurgedKFold,
+    cross_validated_ic,
+    cross_validated_ic_cpcv,
+    evaluate_fold_ic,
+)
 
 __all__ = [
+    "AcceptanceReport",
+    "ArtifactManifest",
+    "CombinatorialPurgedCV",
+    "DecisionTraceRow",
     "Job",
+    "OOSEvidence",
     "ParallelTimeoutError",
     "Pipeline",
     "PipelineResult",
     "PipelineStepRecord",
+    "PooledMetric",
+    "PurgedKFold",
+    "RegimeLabel",
+    "RegimeMetric",
+    "SCORER_ENTRY_POINT_GROUP",
+    "Scorer",
+    "ScorerKindNotRegistered",
     "Task",
+    "Tier",
+    "cross_validated_ic",
+    "cross_validated_ic_cpcv",
+    "evaluate_fold_ic",
+    "load_scorer",
     "run_parallel",
+    "validate_regime_params",
 ]
