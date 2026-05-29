@@ -27,8 +27,6 @@ SIBLING_NAMES = (
     "renquant-backtesting",
     "renquant-artifacts",
     "renquant-base-data",
-    "renquant-model-gbdt",
-    "renquant-model-patchtst",
     "renquant-model",
     "renquant-strategy-104",
     "renquant-orchestrator",
