@@ -64,7 +64,6 @@ def _scan(root: Path, *, allow: set[str] = frozenset()) -> list[tuple[str, int, 
     if not root.exists():
         return hits
     for py in root.rglob("*.py"):
-        rel = py.relative_to(root.parent).as_posix() if root.name != "src" else py.relative_to(root.parent).as_posix()
         # Compute path relative to the subrepo root.
         try:
             rel_root = py.relative_to(root).as_posix()

@@ -209,9 +209,9 @@ def hac_mean(series: Sequence[float], *, lag: int | None = None) -> HACResult:
     centered = x - mean
     gamma0 = float(np.dot(centered, centered) / n)
     var = gamma0
-    for l in range(1, lag + 1):
-        weight = 1.0 - l / (lag + 1.0)
-        gamma_l = float(np.dot(centered[l:], centered[:-l]) / n)
+    for offset in range(1, lag + 1):
+        weight = 1.0 - offset / (lag + 1.0)
+        gamma_l = float(np.dot(centered[offset:], centered[:-offset]) / n)
         var += 2.0 * weight * gamma_l
     var = max(var, 1e-18)
     se = math.sqrt(var / n)
