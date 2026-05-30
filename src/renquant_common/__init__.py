@@ -31,6 +31,7 @@ from .purged_cv import (
     cross_validated_ic_cpcv,
     evaluate_fold_ic,
 )
+from .training_runs import record_training_run
 
 __all__ = [
     "AcceptanceReport",
@@ -56,6 +57,7 @@ __all__ = [
     "cross_validated_ic_cpcv",
     "evaluate_fold_ic",
     "load_scorer",
+    "record_training_run",
     "run_parallel",
     "validate_regime_params",
 ]
