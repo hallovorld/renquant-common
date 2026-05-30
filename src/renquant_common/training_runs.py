@@ -142,7 +142,7 @@ def _default_training_jsonl_dir(conn: sqlite3.Connection | None) -> Path:
     except Exception:
         main_path = ""
     if not main_path:
-        return Path("logs/training")
+        raise ValueError("jsonl_dir is required when SQLite connection has no file path")
     db_path = Path(main_path)
     root = db_path.parent.parent if db_path.parent.name == "data" else db_path.parent
     return root / "logs" / "training"

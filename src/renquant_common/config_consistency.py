@@ -174,13 +174,13 @@ def assert_consistent(
         f"  Live config fingerprint:    {live_fp}\n"
         f"  Artifact stored fingerprint: {stored}\n"
         f"\nField-level differences:\n" + "\n".join(diff_lines) + "\n"
-        f"\nRESOLUTION:\n"
-        f"  (a) Retrain the model: python scripts/train_104.py --skip-baseline "
-        f"--skip-recalibrate --force\n"
-        f"  (b) Restore matching strategy_config.json from the checkpoint that "
-        f"matches the artifact (e.g. artifacts/checkpoint_*/strategy_config.json)\n"
-        f"  (c) Bypass via runner --skip-config-consistency (DANGEROUS — "
-        f"silently produces miscalibrated trades)"
+        "\nRESOLUTION:\n"
+        "  (a) Retrain the model: python scripts/train_104.py --skip-baseline "
+        "--skip-recalibrate --force\n"
+        "  (b) Restore matching strategy_config.json from the checkpoint that "
+        "matches the artifact (e.g. artifacts/checkpoint_*/strategy_config.json)\n"
+        "  (c) Bypass via runner --skip-config-consistency (DANGEROUS — "
+        "silently produces miscalibrated trades)"
     )
     if strict:
         raise ConfigModelMismatch(msg)

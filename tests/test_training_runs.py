@@ -3,7 +3,10 @@ from __future__ import annotations
 import datetime as dt
 import json
 import sqlite3
+import subprocess
 from pathlib import Path
+
+import pytest
 
 from renquant_common import record_training_run
 
@@ -71,6 +74,47 @@ def test_record_training_run_can_skip_outputs(tmp_path: Path) -> None:
         artifact_type="noop",
         also_log_jsonl=False,
     ).startswith("20260530000000-noop-")
+
+
+def test_record_training_run_resolves_commit_from_repo_dir(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "Test User"], cwd=repo, check=True)
+    (repo / "README.md").write_text("fixture\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-m", "fixture"], cwd=repo, check=True, capture_output=True)
+    expected_sha = subprocess.run(
+        ["git", "rev-parse", "--short", "HEAD"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    db = tmp_path / "sim_runs.db"
+    conn = sqlite3.connect(str(db))
+    _create_training_runs(conn)
+    record_training_run(
+        conn,
+        run_date=dt.datetime(2026, 5, 30),
+        artifact_type="auto-sha",
+        repo_dir=repo,
+        also_log_jsonl=False,
+    )
+
+    sha = conn.execute("SELECT commit_sha FROM training_runs").fetchone()[0]
+    conn.close()
+    assert sha == expected_sha
+
+
+def test_record_training_run_requires_jsonl_dir_for_memory_db() -> None:
+    conn = sqlite3.connect(":memory:")
+    _create_training_runs(conn)
+    with pytest.raises(ValueError, match="jsonl_dir is required"):
+        record_training_run(conn, artifact_type="memory")
+    conn.close()
 
 
 def _create_training_runs(conn: sqlite3.Connection) -> None:
