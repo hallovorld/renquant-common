@@ -13,12 +13,21 @@ CHOPPY, BEAR per kernel/config.py::REGIMES). So `bull_regime_ic`
 aggregates {BULL_CALM, BULL_VOLATILE} — the 2 bull labels the detector
 actually emits.
 
-Categorical labels (matching kernel/config.py::REGIMES):
-  - BEAR: vol_20d > 0.35 OR ret_20d < -0.08 OR vol_5d > 0.25 OR ret_5d < -0.04
-  - CHOPPY: vol_5d > vol_60d × 1.5 AND |drift_20d| < 0.02 AND not BEAR
-  - BULL_CALM: (vol_20d < 0.18 AND drift_20d > 0) OR hurst > 0.65,
-               AND not BEAR/CHOPPY
+Categorical labels (matching kernel/config.py::REGIMES) — version-gated
+on the ``detector_version`` parameter:
+
+  - BEAR (all versions): vol_20d > 0.35 OR ret_20d < -0.08
+                         OR vol_5d > 0.25 OR ret_5d < -0.04
+  - CHOPPY (all versions): vol_5d > vol_60d × 1.5
+                           AND |drift_20d| < 0.02 AND not BEAR
+  - BULL_CALM
+      * "legacy" (default): hurst > 0.65 only
+      * "v2026-05-31":     (vol_20d < 0.18 AND drift_20d > 0) OR hurst > 0.65
   - BULL_VOLATILE: everything else
+
+The default is ``"legacy"`` so this PR is byte-compatible with downstream
+consumers until they explicitly opt in. Per §1.5: flipping the default
+requires a sim-parity check on the existing per-regime configs.
 
 BULL_CALM detection — 2026-05-31 §1.4 fix
 ------------------------------------------
@@ -97,13 +106,45 @@ def _compute_hurst(returns: np.ndarray, window: int = 63) -> float:
     return float(np.clip(0.5 + (rs - 1.0) * 0.3, 0.0, 1.0))
 
 
-def compute_hmm_regime_labels(spy_path: Path,
-                                lookback_days: int = 252) -> pd.DataFrame:
+DETECTOR_VERSION_LEGACY = "legacy"
+DETECTOR_VERSION_V20260531 = "v2026-05-31"
+DETECTOR_VERSION_DEFAULT = DETECTOR_VERSION_LEGACY  # safe default — preserves
+# pre-fix behavior until downstream consumers opt in via the explicit version.
+
+_KNOWN_VERSIONS = frozenset({DETECTOR_VERSION_LEGACY, DETECTOR_VERSION_V20260531})
+
+
+def compute_hmm_regime_labels(
+    spy_path: Path,
+    lookback_days: int = 252,
+    *,
+    detector_version: str = DETECTOR_VERSION_DEFAULT,
+) -> pd.DataFrame:
     """Per-date HMM-style regime label from SPY OHLCV.
+
+    ``detector_version`` selects the BULL_CALM admission rule:
+
+      * ``"legacy"`` (default, preserves pre-2026-05-31 behavior) —
+        BULL_CALM only when ``hurst > HURST_TREND_THR``. Has a known
+        false-negative problem on SPY's normal calm grind-up regime
+        (mislabels canonical calm windows as BULL_VOLATILE); see module
+        docstring for empirical evidence.
+      * ``"v2026-05-31"`` — adds a vol-based admission alongside the
+        legacy hurst path: BULL_CALM also when
+        ``vol_20d < BULL_CALM_VOL_THR AND drift_20d > BULL_CALM_DRIFT_THR``.
+        Correctly labels 2017/2019/2021 as BULL_CALM majority. Detector-
+        version flag is the rollout gate per §1.5 — flipping the default
+        requires a sim-parity check on the existing per-regime configs.
 
     Returns: DataFrame with columns [date, regime] where regime ∈
     {BULL_CALM, BULL_VOLATILE, BEAR, CHOPPY}.
     """
+    if detector_version not in _KNOWN_VERSIONS:
+        raise ValueError(
+            f"unknown detector_version={detector_version!r}; "
+            f"expected one of {sorted(_KNOWN_VERSIONS)}"
+        )
+
     spy = pd.read_parquet(spy_path)
     spy.index = pd.to_datetime(spy.index)
     spy = spy.sort_index()
@@ -133,22 +174,26 @@ def compute_hmm_regime_labels(spy_path: Path,
         # Hurst
         hurst = _compute_hurst(rets[:i + 1], window=63)
 
-        # BEAR override (highest priority)
+        # BEAR override (highest priority — same across all detector versions)
         if (vol_20d > BEAR_VOL_20D_THR or ret_20d < BEAR_RET_20D_THR or
             vol_5d > BEAR_VOL_5D_THR or ret_5d < BEAR_RET_5D_THR):
             regime = RegimeLabel.BEAR.value
-        # CHOPPY: vol cluster + low drift
+        # CHOPPY: vol cluster + low drift (same across all detector versions)
         elif (vol_60d > 1e-6 and vol_5d > vol_60d * CHOPPY_VOL_RATIO
               and abs(drift_20d) < CHOPPY_DRIFT_TH):
             regime = RegimeLabel.CHOPPY.value
-        # BULL_CALM:
-        #   * vol-based path (NEW 2026-05-31): low realized vol + positive
-        #     drift. Captures SPY's grind-up regime that hurst alone misses
-        #     (RS-Hurst hovers around 0.5 even for the calmest years).
-        #   * hurst path (legacy): preserved as OR — rarely fires but
-        #     captures strong-memory windows where it does.
-        elif ((vol_20d < BULL_CALM_VOL_THR and drift_20d > BULL_CALM_DRIFT_THR)
-              or hurst > HURST_TREND_THR):
+        # BULL_CALM admission — version-gated. ``legacy`` keeps the hurst-only
+        # rule for byte-for-byte parity with pre-2026-05-31 consumers; the
+        # v2026-05-31 path adds the vol-based fix without removing the hurst
+        # branch (so any window that hurst would have admitted still admits).
+        elif (
+            (
+                detector_version == DETECTOR_VERSION_V20260531
+                and vol_20d < BULL_CALM_VOL_THR
+                and drift_20d > BULL_CALM_DRIFT_THR
+            )
+            or hurst > HURST_TREND_THR
+        ):
             regime = RegimeLabel.BULL_CALM.value
         else:
             regime = RegimeLabel.BULL_VOLATILE.value
