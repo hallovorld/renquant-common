@@ -72,6 +72,30 @@ def test_synth_fixture_exists() -> None:
     )
 
 
+def test_regen_script_reproduces_committed_fixture(tmp_path: Path) -> None:
+    """The regen script must produce the byte-identical committed fixture,
+    so future maintainers can confidently rebuild it after intentional
+    seed/segment changes. Pinned because any drift here would make the
+    BULL_CALM% test thresholds non-deterministic."""
+    import hashlib
+    import sys
+
+    sys.path.insert(0, str(Path(__file__).resolve().parent / "data"))
+    try:
+        import _regen_spy_synth as regen_mod  # type: ignore[import-not-found]
+    finally:
+        sys.path.pop(0)
+
+    regenerated = regen_mod.regen(tmp_path / "spy_synth.parquet")
+    committed_md5 = hashlib.md5(_SYNTH.read_bytes()).hexdigest()
+    regen_md5 = hashlib.md5(regenerated.read_bytes()).hexdigest()
+    assert committed_md5 == regen_md5, (
+        f"regen script produced different bytes than committed fixture. "
+        f"committed={committed_md5} regen={regen_md5}. Either restore the "
+        f"fixture from git or update the regen script's seed/segment params."
+    )
+
+
 @pytest.mark.parametrize("version", [DETECTOR_VERSION_LEGACY, DETECTOR_VERSION_V20260531])
 def test_synth_crash_segment_labels_bear(version: str) -> None:
     """Both detector versions must label the 60-day synthetic crash as BEAR."""

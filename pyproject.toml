@@ -12,6 +12,11 @@ authors = [{name = "RenQuant"}]
 dependencies = [
   "numpy>=1.24",
   "pandas>=2.0",
+  # Public API includes ``hmm_regime_labels.compute_hmm_regime_labels()`` which
+  # reads parquet via ``pd.read_parquet``. pandas does not bundle an engine,
+  # so we list one explicitly — otherwise consumers + CI fail with
+  # ``ImportError: Unable to find a usable engine``.
+  "pyarrow>=14.0",
   "pydantic>=2.0,<3.0",
   "scipy>=1.10",
 ]
