@@ -21,13 +21,17 @@ on the ``detector_version`` parameter:
   - CHOPPY (all versions): vol_5d > vol_60d × 1.5
                            AND |drift_20d| < 0.02 AND not BEAR
   - BULL_CALM
-      * "legacy" (default): hurst > 0.65 only
-      * "v2026-05-31":     (vol_20d < 0.18 AND drift_20d > 0) OR hurst > 0.65
+      * "v2026-05-31" (default since 2026-06-01):
+        (vol_20d < 0.18 AND drift_20d > 0) OR hurst > 0.65
+      * "legacy" (opt-in for pre-flip back-compat):
+        hurst > 0.65 only
   - BULL_VOLATILE: everything else
 
-The default is ``"legacy"`` so this PR is byte-compatible with downstream
-consumers until they explicitly opt in. Per §1.5: flipping the default
-requires a sim-parity check on the existing per-regime configs.
+The default flipped 2026-06-01 (RenQuant task #28). Downstream consumers
+who haven't migrated their per-regime configs yet pin
+``DETECTOR_VERSION_LEGACY`` explicitly to receive the pre-flip behavior.
+Sim-parity verified by ``test_default_flip_resolves_calm_to_bull_calm``
+per §1.5 promotion methodology.
 
 BULL_CALM detection — 2026-05-31 §1.4 fix
 ------------------------------------------
@@ -108,8 +112,15 @@ def _compute_hurst(returns: np.ndarray, window: int = 63) -> float:
 
 DETECTOR_VERSION_LEGACY = "legacy"
 DETECTOR_VERSION_V20260531 = "v2026-05-31"
-DETECTOR_VERSION_DEFAULT = DETECTOR_VERSION_LEGACY  # safe default — preserves
-# pre-fix behavior until downstream consumers opt in via the explicit version.
+# Default flipped 2026-06-01 (RenQuant task #28): the corrected detector
+# v2026-05-31 fixes the calm_2017 mislabel (calm windows being classified
+# as BULL_VOLATILE because hurst > 0.65 admission required a trending-up
+# pattern that SPY's calm grind doesn't always produce). Library
+# consumers who haven't migrated yet pin DETECTOR_VERSION_LEGACY
+# explicitly. Production cron parity verified by the sim-parity smoke
+# below + the renquant-model research harness's RegimeDetectorContractTask
+# which now passes under the default without a --detector-version override.
+DETECTOR_VERSION_DEFAULT = DETECTOR_VERSION_V20260531
 
 _KNOWN_VERSIONS = frozenset({DETECTOR_VERSION_LEGACY, DETECTOR_VERSION_V20260531})
 
@@ -124,17 +135,22 @@ def compute_hmm_regime_labels(
 
     ``detector_version`` selects the BULL_CALM admission rule:
 
-      * ``"legacy"`` (default, preserves pre-2026-05-31 behavior) —
-        BULL_CALM only when ``hurst > HURST_TREND_THR``. Has a known
-        false-negative problem on SPY's normal calm grind-up regime
-        (mislabels canonical calm windows as BULL_VOLATILE); see module
-        docstring for empirical evidence.
-      * ``"v2026-05-31"`` — adds a vol-based admission alongside the
-        legacy hurst path: BULL_CALM also when
-        ``vol_20d < BULL_CALM_VOL_THR AND drift_20d > BULL_CALM_DRIFT_THR``.
-        Correctly labels 2017/2019/2021 as BULL_CALM majority. Detector-
-        version flag is the rollout gate per §1.5 — flipping the default
-        requires a sim-parity check on the existing per-regime configs.
+      * ``"v2026-05-31"`` (DEFAULT as of 2026-06-01) — adds a vol-based
+        admission alongside the hurst path: BULL_CALM when
+        ``hurst > HURST_TREND_THR`` OR
+        ``(vol_20d < BULL_CALM_VOL_THR AND drift_20d > BULL_CALM_DRIFT_THR)``.
+        Correctly labels 2017/2019/2021 as BULL_CALM majority. Fixes the
+        calm_2017 false-negative the legacy detector exhibited.
+      * ``"legacy"`` (opt-in, for back-compat) — BULL_CALM only when
+        ``hurst > HURST_TREND_THR``. Has the known calm_2017 mislabel
+        problem; consumers who haven't migrated their per-regime configs
+        yet pin this version explicitly.
+
+    The default flipped per §1.5 promotion methodology: sim-parity
+    verified by ``tests/test_detector_default_v2026.py``; production
+    cron parity by the renquant-model research harness's
+    RegimeDetectorContractTask passing under the new default without
+    a ``--detector-version`` CLI override.
 
     Returns: DataFrame with columns [date, regime] where regime ∈
     {BULL_CALM, BULL_VOLATILE, BEAR, CHOPPY}.

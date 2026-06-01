@@ -15,9 +15,10 @@ This test runs two complementary suites:
    absent). 7 windows from 2017–2023 with known regime majorities; runs
    in the umbrella's local dev environment, skipped in renquant-common CI.
 
-2026-05-31 fix added a vol-based BULL_CALM admission. Default
-``detector_version="legacy"`` preserves pre-fix behavior — flipping to
-``"v2026-05-31"`` is the operator opt-in.
+2026-05-31 fix added a vol-based BULL_CALM admission. 2026-06-01 PR
+#28 flipped the default from ``"legacy"`` to ``"v2026-05-31"``. Consumers
+who haven't migrated their per-regime configs yet pin
+``DETECTOR_VERSION_LEGACY`` explicitly.
 """
 from __future__ import annotations
 
@@ -180,15 +181,83 @@ def test_synth_crash_not_admitted_to_bull_calm_by_v20260531() -> None:
     )
 
 
-def test_detector_version_default_is_legacy() -> None:
-    """Backward-compat invariant: omitting the version arg keeps pre-fix
-    behavior, so downstream consumers don't suddenly get re-labeled."""
+def test_detector_version_default_is_v20260531() -> None:
+    """Default flipped 2026-06-01 (RenQuant task #28): omitting the
+    version arg now produces v2026-05-31 behavior — the corrected
+    detector that fixes the calm_2017 mislabel. Consumers who
+    haven't migrated their per-regime configs yet pin
+    DETECTOR_VERSION_LEGACY explicitly."""
     labels_explicit = compute_hmm_regime_labels(
-        _SYNTH, detector_version=DETECTOR_VERSION_LEGACY,
+        _SYNTH, detector_version=DETECTOR_VERSION_V20260531,
     )
     labels_default = compute_hmm_regime_labels(_SYNTH)
     pd.testing.assert_frame_equal(labels_explicit, labels_default)
-    assert DETECTOR_VERSION_DEFAULT == DETECTOR_VERSION_LEGACY
+    assert DETECTOR_VERSION_DEFAULT == DETECTOR_VERSION_V20260531
+
+
+def test_detector_version_legacy_still_reachable() -> None:
+    """Back-compat: consumers who explicitly pin LEGACY MUST keep
+    receiving the pre-fix behavior. Critical for production cron
+    parity until per-regime configs are re-tuned for the new
+    default (per §1.5 promotion methodology, PR #28 sim-parity)."""
+    labels_legacy = compute_hmm_regime_labels(
+        _SYNTH, detector_version=DETECTOR_VERSION_LEGACY,
+    )
+    labels_default = compute_hmm_regime_labels(_SYNTH)
+    # The two MUST differ — otherwise the default flip didn't take effect.
+    assert not labels_legacy.equals(labels_default), (
+        "default and legacy detector outputs are identical — the "
+        "default flip didn't take effect, or v2026-05-31 silently "
+        "reduces to legacy")
+
+
+def test_default_flip_resolves_calm_to_bull_calm() -> None:
+    """The point of flipping the default: synthetic calm-up data (low
+    vol + positive drift, the canonical BULL_CALM signal) must come
+    back as majority-BULL_CALM under the new default. Same input
+    under legacy detector returns majority-BULL_VOLATILE because the
+    hurst-only rule fails on smooth grind-ups.
+
+    This is the regression-guard for the calm_2017 mislabel that
+    motivated PR #28 (RenQuant task #28, P0 §1.4 PRIME DIRECTIVE)."""
+    # Build synthetic SPY: 252 days of vol=0.10 (annualised, well below
+    # BULL_CALM_VOL_THR=0.18) + monotonic drift +0.0005/day.
+    import numpy as np
+    rng = np.random.default_rng(20260601)
+    n = 252
+    daily_vol = 0.10 / np.sqrt(252)
+    rets = 0.0005 + rng.normal(0.0, daily_vol, n)
+    dates = pd.bdate_range("2024-01-02", periods=n)
+    close = 400.0 * np.exp(np.cumsum(rets))
+    spy = pd.DataFrame({"close": close}, index=dates)
+    import tempfile
+    with tempfile.NamedTemporaryFile(suffix=".parquet", delete=False) as f:
+        spy.to_parquet(f.name)
+        synthetic = Path(f.name)
+
+    labels_default = compute_hmm_regime_labels(synthetic)
+    labels_legacy = compute_hmm_regime_labels(
+        synthetic, detector_version=DETECTOR_VERSION_LEGACY,
+    )
+
+    # Skip the 30-day warmup window where labels are forced BULL_CALM.
+    default_post = labels_default.iloc[30:]
+    legacy_post = labels_legacy.iloc[30:]
+
+    default_bc_pct = (default_post["regime"] == _BC).sum() / len(default_post)
+    legacy_bc_pct = (legacy_post["regime"] == _BC).sum() / len(legacy_post)
+
+    # Under the new default, calm-up SPY should be majority BULL_CALM.
+    assert default_bc_pct >= 0.60, (
+        f"calm-up synthetic SPY labels only {default_bc_pct:.0%} BULL_CALM "
+        f"under v2026-05-31 default — vol-based admission gate not "
+        f"taking effect")
+    # Under legacy, the same input should be MUCH less BULL_CALM
+    # (the bug PR #28 fixes).
+    assert legacy_bc_pct < default_bc_pct - 0.20, (
+        f"legacy detector returns {legacy_bc_pct:.0%} BULL_CALM, default "
+        f"returns {default_bc_pct:.0%} — gap too small to confirm the "
+        f"flip is doing real work (expected ≥ 20 pp gap)")
 
 
 def test_unknown_detector_version_rejected() -> None:
