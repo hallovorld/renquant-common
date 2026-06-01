@@ -103,6 +103,59 @@ def test_min_across_regimes_returns_worst() -> None:
     assert math.isnan(min_across_regimes({}))
 
 
+def test_per_regime_cs_ic_filters_warmup_artifacts() -> None:
+    """PR #5 reviewer (codex) caught: prior filter only rejected
+    ``nan_nan``, letting partial-warmup labels like ``HIGH_nan`` or
+    ``nan_CALM`` through. With custom windows or low
+    ``min_days_per_regime``, those partial labels become objective
+    regimes — Optuna would happily optimize against the warm-up
+    window. Filter now rejects ANY regime with a ``nan`` component."""
+    dates = pd.bdate_range("2024-01-02", periods=60)
+    # Mix 3 valid regimes with 3 warm-up artifact labels — all with
+    # enough days to clear the 10-day filter individually.
+    regimes_per_date = (
+        ["HIGH_CALM"] * 12 + ["MED_NORMAL"] * 12 + ["LOW_SPIKED"] * 12
+        + ["nan_nan"] * 8 + ["HIGH_nan"] * 8 + ["nan_CALM"] * 8
+    )
+    regime_df = pd.DataFrame({"date": dates, "regime": regimes_per_date})
+
+    rng = np.random.default_rng(42)
+    rows = []
+    for d in dates:
+        for t in range(5):
+            rows.append({
+                "date": d,
+                "pred": rng.standard_normal(),
+                "label": rng.standard_normal(),
+            })
+    preds = pd.DataFrame(rows)
+
+    ic = per_regime_cs_ic(preds, regime_df, min_days_per_regime=5)
+    # Only the 3 VALID regimes — warm-up artifacts excluded.
+    valid_only = {"HIGH_CALM", "MED_NORMAL", "LOW_SPIKED"}
+    assert set(ic.keys()) == valid_only, (
+        f"warm-up artifacts leaked into per_regime_cs_ic output: "
+        f"{set(ic.keys()) - valid_only}")
+
+
+def test_is_warmup_regime_truth_table() -> None:
+    """Pin the warm-up filter contract directly."""
+    from renquant_common.regime_labels import _is_warmup_regime
+    # Valid 9-grid labels — not warm-up.
+    for trend in ("LOW", "MED", "HIGH"):
+        for vol in ("CALM", "NORMAL", "SPIKED"):
+            assert _is_warmup_regime(f"{trend}_{vol}") is False
+    # Warm-up artifacts — must be filtered.
+    for w in ("nan_nan", "HIGH_nan", "nan_CALM", "nan_nan", "LOW_nan"):
+        assert _is_warmup_regime(w) is True, f"{w} should be warm-up"
+    # Pandas NaN-typed regime cell.
+    assert _is_warmup_regime(float("nan")) is True
+    assert _is_warmup_regime(None) is True
+    # Malformed (e.g. extra underscores) — treat as warm-up
+    # (fail-closed: an unrecognized shape shouldn't enter objectives).
+    assert _is_warmup_regime("HIGH_CALM_extra") is True
+
+
 # ---- Lift parity: behaviour matches umbrella ---------------------------
 
 
@@ -130,11 +183,18 @@ def umbrella_module():
 def test_compute_spy_regime_labels_matches_umbrella(
     synthetic_spy: Path, umbrella_module
 ) -> None:
-    """The lift MUST be behaviourally identical to the umbrella's
-    original on the same SPY input. Any divergence flags either:
+    """The labeller (``compute_spy_regime_labels``) MUST be byte-equivalent
+    to the umbrella's original on the same SPY input — including warm-up
+    rows where vol percentile hasn't accumulated yet (those are part of
+    the function's contract output). Any divergence flags either:
 
       * an unintentional change in the lift (this PR must fix), OR
       * the umbrella drifted ahead of this copy (consumers must upgrade)
+
+    NB: ``per_regime_cs_ic``'s filter behaviour INTENTIONALLY diverges
+    from the umbrella (PR #5 reviewer follow-up — warm-up artifacts
+    must not enter objectives). That divergence is tested separately
+    in ``test_per_regime_cs_ic_filters_warmup_artifacts``.
     """
     lifted = compute_spy_regime_labels(synthetic_spy)
     umbrella = umbrella_module.compute_spy_regime_labels(synthetic_spy)

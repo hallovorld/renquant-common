@@ -73,6 +73,27 @@ def compute_spy_regime_labels(spy_path: Path,
     return out.reset_index()
 
 
+def _is_warmup_regime(regime: str | float) -> bool:
+    """A regime label is a warm-up artifact when either the TREND or
+    VOL component is `nan` (rolling window hasn't accumulated enough
+    history yet). Examples: `nan_nan`, `HIGH_nan`, `nan_CALM`.
+
+    These MUST NOT enter ``per_regime_cs_ic`` output — Optuna would
+    happily optimize against the warm-up window otherwise. PR #5
+    reviewer caught this: the prior filter only rejected
+    ``"nan_nan"`` and let partial-warm-up labels through, which
+    becomes acute under custom windows + low min_days_per_regime.
+    """
+    if regime is None or (isinstance(regime, float) and pd.isna(regime)):
+        return True
+    s = str(regime)
+    # Any TREND × VOL bucket has shape "<TREND>_<VOL>"; both halves
+    # must be a real label (not the string "nan" that pandas emits
+    # for NaN-cast cells).
+    parts = s.split("_")
+    return len(parts) != 2 or "nan" in parts
+
+
 def per_regime_cs_ic(preds_df: pd.DataFrame,
                      regime_df: pd.DataFrame,
                      min_samples_per_day: int = 5,
@@ -88,7 +109,9 @@ def per_regime_cs_ic(preds_df: pd.DataFrame,
 
     Returns:
       dict regime → mean IC across that regime's days. Excludes
-      under-sampled regimes (n_days < min_days_per_regime).
+      under-sampled regimes (n_days < min_days_per_regime) and
+      warm-up artifacts where either TREND or VOL is unresolved
+      (see ``_is_warmup_regime``).
     """
     from scipy.stats import spearmanr
 
@@ -110,7 +133,7 @@ def per_regime_cs_ic(preds_df: pd.DataFrame,
         if np.isnan(r):
             continue
         regime = g["regime"].iloc[0]
-        if pd.isna(regime) or regime == "nan_nan":
+        if _is_warmup_regime(regime):
             continue
         out.setdefault(str(regime), []).append(float(r))
 
