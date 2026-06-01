@@ -31,6 +31,7 @@ from .purged_cv import (
     cross_validated_ic_cpcv,
     evaluate_fold_ic,
 )
+from .hurst import compute_hurst, rolling_hurst
 from .net_safety import FetchBudget, call_with_timeout
 from .regime_labels import (
     compute_spy_regime_labels,
@@ -61,6 +62,7 @@ __all__ = [
     "FetchBudget",
     "Tier",
     "call_with_timeout",
+    "compute_hurst",
     "compute_spy_regime_labels",
     "cross_validated_ic",
     "cross_validated_ic_cpcv",
@@ -69,6 +71,7 @@ __all__ = [
     "min_across_regimes",
     "per_regime_cs_ic",
     "record_training_run",
+    "rolling_hurst",
     "run_parallel",
     "validate_regime_params",
 ]
