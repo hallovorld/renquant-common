@@ -21,10 +21,13 @@
       "ScorerKindNotRegistered",
       "Task",
       "Tier",
+      "compute_spy_regime_labels",
       "cross_validated_ic",
       "cross_validated_ic_cpcv",
       "evaluate_fold_ic",
       "load_scorer",
+      "min_across_regimes",
+      "per_regime_cs_ic",
       "record_training_run",
       "run_parallel",
       "validate_regime_params"

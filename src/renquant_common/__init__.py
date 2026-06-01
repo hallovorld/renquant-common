@@ -31,6 +31,11 @@ from .purged_cv import (
     cross_validated_ic_cpcv,
     evaluate_fold_ic,
 )
+from .regime_labels import (
+    compute_spy_regime_labels,
+    min_across_regimes,
+    per_regime_cs_ic,
+)
 from .training_runs import record_training_run
 
 __all__ = [
@@ -53,10 +58,13 @@ __all__ = [
     "ScorerKindNotRegistered",
     "Task",
     "Tier",
+    "compute_spy_regime_labels",
     "cross_validated_ic",
     "cross_validated_ic_cpcv",
     "evaluate_fold_ic",
     "load_scorer",
+    "min_across_regimes",
+    "per_regime_cs_ic",
     "record_training_run",
     "run_parallel",
     "validate_regime_params",
