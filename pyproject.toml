@@ -10,6 +10,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 authors = [{name = "RenQuant"}]
 dependencies = [
+  "arch>=6.3",
   "numpy>=1.24",
   "pandas>=2.0",
   # Public API includes ``hmm_regime_labels.compute_hmm_regime_labels()`` which
@@ -19,6 +20,7 @@ dependencies = [
   "pyarrow>=14.0",
   "pydantic>=2.0,<3.0",
   "scipy>=1.10",
+  "statsmodels>=0.14",
 ]
 
 [tool.setuptools.packages.find]
