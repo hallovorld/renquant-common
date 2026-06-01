@@ -1,6 +1,6 @@
 {
   "renquant_common": {
-    "version": "0.7.0",
+    "version": "0.7.1",
     "public_names": [
       "AcceptanceReport",
       "ArtifactManifest",
