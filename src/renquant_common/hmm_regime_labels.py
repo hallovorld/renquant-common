@@ -115,11 +115,29 @@ DETECTOR_VERSION_V20260531 = "v2026-05-31"
 # Default flipped 2026-06-01 (RenQuant task #28): the corrected detector
 # v2026-05-31 fixes the calm_2017 mislabel (calm windows being classified
 # as BULL_VOLATILE because hurst > 0.65 admission required a trending-up
-# pattern that SPY's calm grind doesn't always produce). Library
-# consumers who haven't migrated yet pin DETECTOR_VERSION_LEGACY
-# explicitly. Production cron parity verified by the sim-parity smoke
-# below + the renquant-model research harness's RegimeDetectorContractTask
-# which now passes under the default without a --detector-version override.
+# pattern that SPY's calm grind doesn't always produce).
+#
+# What this PR's tests prove (see ``tests/test_hmm_regime_golden_windows.py``):
+#   1. Default with no arg == explicit ``v2026-05-31``
+#      (``test_detector_version_default_is_v20260531``)
+#   2. Legacy remains reachable via explicit pin AND produces
+#      observably different output (``test_detector_version_legacy_still_reachable``)
+#   3. Synthetic calm-up SPY now resolves to majority-BULL_CALM under
+#      default (≥60%) while legacy returns ≥20pp less BULL_CALM —
+#      regression guard for the calm_2017 bug
+#      (``test_default_flip_resolves_calm_to_bull_calm``)
+#   4. Real-history golden windows (2017 / 2019 H2 / 2021 / covid /
+#      q2_2022_bear) pass when the umbrella SPY parquet is on disk;
+#      skip-not-fail when standalone (``test_real_spy_golden_windows``)
+#
+# What this PR does NOT prove (deliberate — separate task):
+#   * Production renquant_104 strategy parity. Live callers that
+#     depend on the old labelling for per-regime config tuning MUST
+#     pin DETECTOR_VERSION_LEGACY until their configs are re-tuned.
+#   * Cross-repo: the renquant-model research harness still passes
+#     detector_version="v2026-05-31" explicitly in its CLI invocations;
+#     a follow-up PR there will switch to relying on the library default
+#     once consumers have migrated.
 DETECTOR_VERSION_DEFAULT = DETECTOR_VERSION_V20260531
 
 _KNOWN_VERSIONS = frozenset({DETECTOR_VERSION_LEGACY, DETECTOR_VERSION_V20260531})
@@ -146,11 +164,16 @@ def compute_hmm_regime_labels(
         problem; consumers who haven't migrated their per-regime configs
         yet pin this version explicitly.
 
-    The default flipped per §1.5 promotion methodology: sim-parity
-    verified by ``tests/test_detector_default_v2026.py``; production
-    cron parity by the renquant-model research harness's
-    RegimeDetectorContractTask passing under the new default without
-    a ``--detector-version`` CLI override.
+    The default flipped per §1.5 promotion methodology. What the
+    library-side test suite proves (see module docstring above and
+    ``tests/test_hmm_regime_golden_windows.py``):
+    default ≡ explicit ``v2026-05-31``; legacy still reachable + differs;
+    calm-up synthetic resolves majority BULL_CALM under default while
+    legacy returns ≥20pp less; real golden windows pass when umbrella
+    SPY parquet is on disk. Production renquant_104 strategy parity
+    is a SEPARATE concern — callers whose per-regime configs depend on
+    the old labelling MUST pin ``DETECTOR_VERSION_LEGACY`` until they
+    re-tune.
 
     Returns: DataFrame with columns [date, regime] where regime ∈
     {BULL_CALM, BULL_VOLATILE, BEAR, CHOPPY}.
