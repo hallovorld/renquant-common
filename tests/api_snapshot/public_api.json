@@ -1,6 +1,6 @@
 {
   "renquant_common": {
-    "version": "0.5.0",
+    "version": "0.6.0",
     "public_names": [
       "AcceptanceReport",
       "ArtifactManifest",
@@ -23,6 +23,7 @@
       "Task",
       "Tier",
       "call_with_timeout",
+      "compute_hurst",
       "compute_spy_regime_labels",
       "cross_validated_ic",
       "cross_validated_ic_cpcv",
@@ -31,6 +32,7 @@
       "min_across_regimes",
       "per_regime_cs_ic",
       "record_training_run",
+      "rolling_hurst",
       "run_parallel",
       "validate_regime_params"
     ],
