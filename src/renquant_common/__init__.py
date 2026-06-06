@@ -12,7 +12,10 @@ from .contracts import (
     Scorer,
     ScorerKindNotRegistered,
     Tier,
+    TriadReport,
+    VerifiedArtifact,
     load_scorer,
+    validate_manifest_for_leakage_triad,
     validate_regime_params,
 )
 from .pipeline import (
@@ -61,6 +64,8 @@ __all__ = [
     "Task",
     "FetchBudget",
     "Tier",
+    "TriadReport",
+    "VerifiedArtifact",
     "call_with_timeout",
     "compute_hurst",
     "compute_spy_regime_labels",
@@ -73,5 +78,6 @@ __all__ = [
     "record_training_run",
     "rolling_hurst",
     "run_parallel",
+    "validate_manifest_for_leakage_triad",
     "validate_regime_params",
 ]

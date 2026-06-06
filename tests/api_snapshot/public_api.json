@@ -1,6 +1,6 @@
 {
   "renquant_common": {
-    "version": "0.7.1",
+    "version": "0.8.0",
     "public_names": [
       "AcceptanceReport",
       "ArtifactManifest",
@@ -22,6 +22,8 @@
       "ScorerKindNotRegistered",
       "Task",
       "Tier",
+      "TriadReport",
+      "VerifiedArtifact",
       "call_with_timeout",
       "compute_hurst",
       "compute_spy_regime_labels",
@@ -34,6 +36,7 @@
       "record_training_run",
       "rolling_hurst",
       "run_parallel",
+      "validate_manifest_for_leakage_triad",
       "validate_regime_params"
     ],
     "regime_labels": [
@@ -50,7 +53,9 @@
       "DecisionTraceRow",
       "OOSEvidence",
       "PooledMetric",
-      "RegimeMetric"
+      "RegimeMetric",
+      "TriadReport",
+      "VerifiedArtifact"
     ],
     "artifact_manifest_must_not_have": [
       "promotion_status"

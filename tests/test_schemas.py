@@ -14,6 +14,9 @@ from renquant_common import (
     RegimeLabel,
     RegimeMetric,
     Tier,
+    TriadReport,
+    VerifiedArtifact,
+    validate_manifest_for_leakage_triad,
 )
 
 
@@ -73,6 +76,99 @@ def test_oos_evidence_embargo_nonnegative() -> None:
 def test_manifest_lookahead_must_be_positive() -> None:
     with pytest.raises(ValidationError):
         _manifest(lookahead_days=0)
+
+
+def _verified_artifact(
+    role: str = "candidate", **overrides
+) -> VerifiedArtifact:
+    base = dict(
+        role=role,
+        manifest=_manifest(),
+        manifest_fingerprint=f"sha256:{role}",
+        verified_at=datetime(2026, 6, 1, tzinfo=timezone.utc),
+        checks=("manifest_contract", "embargo_covers_lookahead"),
+    )
+    base.update(overrides)
+    return VerifiedArtifact(**base)
+
+
+def test_leakage_manifest_validation_accepts_contract_manifest() -> None:
+    manifest = _manifest()
+    assert validate_manifest_for_leakage_triad(manifest) == manifest
+
+
+def test_leakage_manifest_validation_requires_sha256_fingerprints() -> None:
+    with pytest.raises(ValueError, match="feature_fingerprint"):
+        validate_manifest_for_leakage_triad(
+            _manifest(feature_fingerprint="blake3:abc")
+        )
+
+
+def test_verified_artifact_requires_embargo_to_cover_lookahead() -> None:
+    with pytest.raises(ValidationError, match="embargo_days"):
+        _verified_artifact(
+            manifest=_manifest(
+                lookahead_days=5,
+                oos_evidence=OOSEvidence(
+                    mean_ic=0.05,
+                    std_ic=0.01,
+                    per_fold_ic=(0.04, 0.05),
+                    cv_method="purged_kfold",
+                    embargo_days=4,
+                ),
+            )
+        )
+
+
+def test_triad_report_roundtrip() -> None:
+    report = TriadReport(
+        candidate=_verified_artifact("candidate"),
+        baseline=_verified_artifact("baseline"),
+        shadow=_verified_artifact("shadow"),
+        generated_at=datetime(2026, 6, 1, tzinfo=timezone.utc),
+        leakage_safe=True,
+        rationale="all triad manifests pass the leakage MVP contract",
+    )
+    parsed = TriadReport.model_validate_json(report.model_dump_json())
+    assert parsed == report
+
+
+def test_triad_report_requires_matching_roles() -> None:
+    with pytest.raises(ValidationError, match="baseline artifact"):
+        TriadReport(
+            candidate=_verified_artifact("candidate"),
+            baseline=_verified_artifact("shadow"),
+            shadow=_verified_artifact("shadow"),
+            generated_at=datetime(2026, 6, 1, tzinfo=timezone.utc),
+            leakage_safe=True,
+            rationale="invalid roles",
+        )
+
+
+def test_triad_report_requires_aligned_lookahead() -> None:
+    with pytest.raises(ValidationError, match="lookahead_days"):
+        TriadReport(
+            candidate=_verified_artifact("candidate"),
+            baseline=_verified_artifact(
+                "baseline", manifest=_manifest(lookahead_days=6)
+            ),
+            shadow=_verified_artifact("shadow"),
+            generated_at=datetime(2026, 6, 1, tzinfo=timezone.utc),
+            leakage_safe=True,
+            rationale="invalid target alignment",
+        )
+
+
+def test_triad_report_cannot_mark_unsafe_artifact_safe() -> None:
+    with pytest.raises(ValidationError, match="unsafe artifacts"):
+        TriadReport(
+            candidate=_verified_artifact("candidate"),
+            baseline=_verified_artifact("baseline", leakage_safe=False),
+            shadow=_verified_artifact("shadow"),
+            generated_at=datetime(2026, 6, 1, tzinfo=timezone.utc),
+            leakage_safe=True,
+            rationale="invalid safe summary",
+        )
 
 
 def test_decision_trace_row_requires_regime_enum() -> None:
