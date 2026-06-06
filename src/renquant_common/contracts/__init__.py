@@ -25,6 +25,9 @@ from .schemas import (
     PooledMetric,
     RegimeMetric,
     Tier,
+    TriadReport,
+    VerifiedArtifact,
+    validate_manifest_for_leakage_triad,
 )
 
 __all__ = [
@@ -39,6 +42,9 @@ __all__ = [
     "Scorer",
     "ScorerKindNotRegistered",
     "Tier",
+    "TriadReport",
+    "VerifiedArtifact",
     "load_scorer",
+    "validate_manifest_for_leakage_triad",
     "validate_regime_params",
 ]

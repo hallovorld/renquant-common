@@ -12,8 +12,10 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import Enum
+from typing import Literal
+from urllib.parse import urlparse
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .regime import RegimeLabel
 
@@ -61,6 +63,91 @@ class ArtifactManifest(BaseModel):
     oos_evidence: OOSEvidence
     calibrator_uri: str | None = None
     owner_repo: str
+
+
+def validate_manifest_for_leakage_triad(manifest: ArtifactManifest) -> ArtifactManifest:
+    """Validate manifest invariants required by the leakage triad sidecar."""
+
+    for field_name in (
+        "feature_fingerprint",
+        "config_fingerprint",
+        "training_data_fingerprint",
+    ):
+        value = getattr(manifest, field_name)
+        if not value.startswith("sha256:"):
+            raise ValueError(f"{field_name} must use a sha256: fingerprint")
+
+    artifact_scheme = urlparse(manifest.artifact_uri).scheme
+    if artifact_scheme not in {"dvc", "file", "s3"}:
+        raise ValueError("artifact_uri must use file://, s3://, or dvc://")
+
+    if manifest.oos_evidence.embargo_days < manifest.lookahead_days:
+        raise ValueError("oos_evidence.embargo_days must cover lookahead_days")
+
+    return manifest
+
+
+class VerifiedArtifact(BaseModel):
+    """Leakage sidecar record for a manifest after contract validation."""
+
+    model_config = ConfigDict(frozen=True)
+
+    role: Literal["candidate", "baseline", "shadow"]
+    manifest: ArtifactManifest
+    manifest_fingerprint: str
+    verified_at: datetime
+    checks: tuple[str, ...] = Field(min_length=1)
+    leakage_safe: bool = True
+    evidence_uri: str | None = None
+
+    @model_validator(mode="after")
+    def _validate_manifest_contract(self) -> "VerifiedArtifact":
+        validate_manifest_for_leakage_triad(self.manifest)
+        if not self.manifest_fingerprint.startswith("sha256:"):
+            raise ValueError("manifest_fingerprint must use a sha256: fingerprint")
+        return self
+
+
+class TriadReport(BaseModel):
+    """Candidate/baseline/shadow leakage verification summary."""
+
+    model_config = ConfigDict(frozen=True)
+
+    candidate: VerifiedArtifact
+    baseline: VerifiedArtifact
+    shadow: VerifiedArtifact
+    generated_at: datetime
+    leakage_safe: bool
+    rationale: str
+
+    @model_validator(mode="after")
+    def _validate_triad_contract(self) -> "TriadReport":
+        expected_roles = {
+            "candidate": self.candidate,
+            "baseline": self.baseline,
+            "shadow": self.shadow,
+        }
+        for expected, artifact in expected_roles.items():
+            if artifact.role != expected:
+                raise ValueError(
+                    f"{expected} artifact must have role={expected!r}"
+                )
+
+        lookaheads = {
+            artifact.manifest.lookahead_days
+            for artifact in expected_roles.values()
+        }
+        if len(lookaheads) != 1:
+            raise ValueError("triad artifacts must share lookahead_days")
+
+        if self.leakage_safe and any(
+            not artifact.leakage_safe for artifact in expected_roles.values()
+        ):
+            raise ValueError(
+                "leakage_safe report cannot include unsafe artifacts"
+            )
+
+        return self
 
 
 class DecisionTraceRow(BaseModel):
