@@ -4,6 +4,7 @@ from .contracts import (
     AcceptanceReport,
     ArtifactManifest,
     DecisionTraceRow,
+    LiveRunBundle,
     OOSEvidence,
     PooledMetric,
     RegimeLabel,
@@ -15,6 +16,7 @@ from .contracts import (
     TriadReport,
     VerifiedArtifact,
     load_scorer,
+    validate_live_run_bundle,
     validate_manifest_for_leakage_triad,
     validate_regime_params,
 )
@@ -49,6 +51,7 @@ __all__ = [
     "CombinatorialPurgedCV",
     "DecisionTraceRow",
     "Job",
+    "LiveRunBundle",
     "OOSEvidence",
     "ParallelTimeoutError",
     "Pipeline",
@@ -78,6 +81,7 @@ __all__ = [
     "record_training_run",
     "rolling_hurst",
     "run_parallel",
+    "validate_live_run_bundle",
     "validate_manifest_for_leakage_triad",
     "validate_regime_params",
 ]

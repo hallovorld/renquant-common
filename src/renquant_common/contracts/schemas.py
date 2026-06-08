@@ -172,6 +172,44 @@ class DecisionTraceRow(BaseModel):
     artifact_fingerprint: str
 
 
+class LiveRunBundle(BaseModel):
+    """Readonly live-run bundle for native-vs-bridge offboard parity."""
+
+    model_config = ConfigDict(frozen=True)
+
+    schema_version: int = 1
+    source: str
+    decision_trace: tuple[dict[str, object], ...]
+    order_intents: tuple[dict[str, object], ...]
+    state_mutations: tuple[dict[str, object], ...] = ()
+    execution_audit: tuple[dict[str, object], ...] = ()
+    submitted_orders: tuple[dict[str, object], ...] = ()
+
+    @model_validator(mode="after")
+    def _validate_live_bundle_contract(self) -> "LiveRunBundle":
+        if self.schema_version != 1:
+            raise ValueError("LiveRunBundle schema_version must be 1")
+        if not self.source:
+            raise ValueError("LiveRunBundle source is required")
+        if not (
+            self.state_mutations
+            or self.execution_audit
+            or self.submitted_orders
+        ):
+            raise ValueError(
+                "LiveRunBundle requires at least one state source: "
+                "state_mutations, execution_audit, or submitted_orders"
+            )
+        return self
+
+
+def validate_live_run_bundle(bundle: LiveRunBundle | dict[str, object]) -> LiveRunBundle:
+    """Validate and return a :class:`LiveRunBundle` instance."""
+    if isinstance(bundle, LiveRunBundle):
+        return bundle
+    return LiveRunBundle.model_validate(bundle)
+
+
 class RegimeMetric(BaseModel):
     """Aggregate of a metric over a single regime's bars."""
 

@@ -9,6 +9,7 @@ from renquant_common import (
     AcceptanceReport,
     ArtifactManifest,
     DecisionTraceRow,
+    LiveRunBundle,
     OOSEvidence,
     PooledMetric,
     RegimeLabel,
@@ -16,6 +17,7 @@ from renquant_common import (
     Tier,
     TriadReport,
     VerifiedArtifact,
+    validate_live_run_bundle,
     validate_manifest_for_leakage_triad,
 )
 
@@ -200,6 +202,52 @@ def test_decision_trace_row_rejects_unknown_regime() -> None:
             regime="RANGE_BOUND",  # type: ignore[arg-type]
             decision="buy",
             artifact_fingerprint="sha256:abc",
+        )
+
+
+def test_live_run_bundle_accepts_state_source_variants() -> None:
+    base = {
+        "source": "native_live_bundle",
+        "decision_trace": [{"ticker": "AAPL", "stage": "score"}],
+        "order_intents": [{"ticker": "AAPL", "action": "buy", "quantity": 1}],
+    }
+
+    submitted = validate_live_run_bundle({
+        **base,
+        "submitted_orders": [{"ticker": "AAPL", "status": "dry_run"}],
+    })
+    audited = LiveRunBundle(
+        **base,
+        execution_audit=({"broker": "readonly-alpaca", "n_submitted": 0},),
+    )
+    mutated = validate_live_run_bundle({
+        **base,
+        "state_mutations": [{"ticker": "AAPL", "action": "buy"}],
+    })
+
+    assert submitted.schema_version == 1
+    assert submitted.submitted_orders[0]["status"] == "dry_run"
+    assert audited.execution_audit[0]["broker"] == "readonly-alpaca"
+    assert mutated.state_mutations[0]["action"] == "buy"
+
+
+def test_live_run_bundle_requires_state_source() -> None:
+    with pytest.raises(ValidationError, match="state source"):
+        LiveRunBundle(
+            source="native_live_bundle",
+            decision_trace=({"ticker": "AAPL"},),
+            order_intents=({"ticker": "AAPL", "action": "buy"},),
+        )
+
+
+def test_live_run_bundle_requires_schema_version_one() -> None:
+    with pytest.raises(ValidationError, match="schema_version"):
+        LiveRunBundle(
+            schema_version=2,
+            source="native_live_bundle",
+            decision_trace=({"ticker": "AAPL"},),
+            order_intents=({"ticker": "AAPL", "action": "buy"},),
+            execution_audit=({"broker": "readonly-alpaca"},),
         )
 
 
