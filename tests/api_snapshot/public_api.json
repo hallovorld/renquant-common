@@ -8,6 +8,7 @@
       "DecisionTraceRow",
       "FetchBudget",
       "Job",
+      "LiveRunBundle",
       "OOSEvidence",
       "ParallelTimeoutError",
       "Pipeline",
@@ -36,6 +37,7 @@
       "record_training_run",
       "rolling_hurst",
       "run_parallel",
+      "validate_live_run_bundle",
       "validate_manifest_for_leakage_triad",
       "validate_regime_params"
     ],
@@ -51,6 +53,7 @@
       "AcceptanceReport",
       "ArtifactManifest",
       "DecisionTraceRow",
+      "LiveRunBundle",
       "OOSEvidence",
       "PooledMetric",
       "RegimeMetric",

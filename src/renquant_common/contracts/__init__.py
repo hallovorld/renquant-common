@@ -21,12 +21,14 @@ from .schemas import (
     AcceptanceReport,
     ArtifactManifest,
     DecisionTraceRow,
+    LiveRunBundle,
     OOSEvidence,
     PooledMetric,
     RegimeMetric,
     Tier,
     TriadReport,
     VerifiedArtifact,
+    validate_live_run_bundle,
     validate_manifest_for_leakage_triad,
 )
 
@@ -34,6 +36,7 @@ __all__ = [
     "AcceptanceReport",
     "ArtifactManifest",
     "DecisionTraceRow",
+    "LiveRunBundle",
     "OOSEvidence",
     "PooledMetric",
     "RegimeLabel",
@@ -45,6 +48,7 @@ __all__ = [
     "TriadReport",
     "VerifiedArtifact",
     "load_scorer",
+    "validate_live_run_bundle",
     "validate_manifest_for_leakage_triad",
     "validate_regime_params",
 ]
