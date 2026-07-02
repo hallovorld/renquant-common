@@ -94,7 +94,13 @@ FINGERPRINT_SCHEMA_VERSION = 1
 #:   inference time — the definition of predictive content, not inert
 #:   bookkeeping. Inheriting the old pipeline denylist's classification
 #:   without checking this call site is exactly the failure mode this
-#:   fingerprint module exists to close.
+#:   fingerprint module exists to close. Additionally, at calibrator-FIT
+#:   time the stamped value is read WITH PRECEDENCE over label-derived
+#:   inference (``renquant_model_patchtst/fit_calibrator.py:365-367``:
+#:   ``_metadata_value(..., "lookahead_days", "lookahead_days_used") or
+#:   _infer_label_lookahead_days(...)``), and the serving μ horizon for
+#:   QP/rotation resolves through it
+#:   (``job_panel_scoring.py::_calibrator_native_horizon_days``).
 #: * ``label`` — MOVED here from OPERATIONAL (r2 correction). Multiple
 #:   artifact-producing scripts (``RenQuant/scripts/qlib_linear_baseline.py``,
 #:   ``backfill_doe_to_mlflow.py``, ``portfolio_simulation_multihorizon.py``)
@@ -105,6 +111,12 @@ FINGERPRINT_SCHEMA_VERSION = 1
 #:   ``label_col`` column name. Since ``label_col`` is already PREDICTIVE
 #:   for the same reason (target-definition identity), ``label`` must be
 #:   too, for consistency across artifact families that use either field.
+#:   Confirmed by a LIVE runtime reader, not writers alone: the PatchTST
+#:   calibrator fit resolves its label column as ``label_col or
+#:   _metadata_value(checkpoint, sidecar, "label_col", "label")``
+#:   (``renquant_model_patchtst/fit_calibrator.py:363``) — when
+#:   ``label_col`` is absent, ``label`` ALONE selects the fitted label
+#:   column, the inferred raw-ER column, and the lookahead inference.
 #: * ``side_label`` — investigated and CONFIRMED OPERATIONAL: it identifies
 #:   which experimental/side training CONFIG produced the artifact
 #:   (``renquant_model_gbdt/pipeline.py``'s ``side_label`` field,
@@ -116,8 +128,39 @@ FINGERPRINT_SCHEMA_VERSION = 1
 #: * ``version`` — investigated: only known reference is the pipeline's
 #:   own denylist comment ("artifact-format version, not a model
 #:   parameter"); no call site found where it selects output
-#:   interpretation. Stays in OPERATIONAL_KEYS below pending contrary
-#:   evidence.
+#:   interpretation (scorer selection branches on ``kind``,
+#:   ``panel_scorer.py:235``). Stays in OPERATIONAL_KEYS below pending
+#:   contrary evidence.
+#:
+#: REAL-ARTIFACT CENSUS additions (r2 review directive "inspect real
+#: artifact families", applied to the live umbrella tree 2026-07-02: the
+#: production artifact ``data/panel-ltr-prod-alpha158-fund-fwd60d.json``,
+#: the shadow-lane artifacts ``data/shadow_analyst/*.json``, and every
+#: field ``RenQuant/scripts/train_production_model.py::build_artifact``
+#: writes). These fields exist in REAL artifacts but were known to
+#: neither legacy table; without classifying them, stamping a real
+#: production artifact raises UnclassifiedKeyError, so stage-1 dual-write
+#: (design §2c) would CRASH real training runs instead of shadowing them.
+#: Tie-break rule for the judgment calls below: a field goes OPERATIONAL
+#: only when (a) no scoring/calibration code path reads it AND (b) it is
+#: post-training-mutable bookkeeping or gate/evaluation evidence. A
+#: train-time-stamped, never-mutated field in doubt goes PREDICTIVE: a
+#: redundant PREDICTIVE classification of an immutable field cannot
+#: create a false MATCH (the dangerous class), and cannot create a false
+#: MISMATCH unless a post-training mutation occurs — which stage-1
+#: shadow telemetry would surface loudly.
+#:
+#: * ``feature_source_contract`` / ``feature_preprocess_version`` /
+#:   ``feature_raw_clip_fit_split`` — written by ``build_artifact``
+#:   alongside the clip/norm fields (``train_production_model.py:819-822``;
+#:   present in the live shadow artifacts): they declare/version the
+#:   serving-side preprocessing semantics of the PREDICTIVE normalization
+#:   fields. Train-time-stamped, never post-training-mutated ⇒ PREDICTIVE
+#:   per the tie-break rule.
+#: * ``feature_addendum_v1`` — recipe-variant identity stamp
+#:   (``build_artifact``, Track B): mirrors PREDICTIVE ``feature_cols``
+#:   membership and pins the variant for WF-gate recipe matching;
+#:   train-time-immutable ⇒ PREDICTIVE per the tie-break rule.
 PREDICTIVE_KEYS = frozenset({
     "booster_raw_json",
     "params",
@@ -130,6 +173,10 @@ PREDICTIVE_KEYS = frozenset({
     "feature_norm_kinds",
     "feature_raw_clip_low",
     "feature_raw_clip_high",
+    "feature_raw_clip_fit_split",
+    "feature_preprocess_version",
+    "feature_source_contract",
+    "feature_addendum_v1",
     "label_col",
     "label",
     "lookahead_days",
@@ -147,8 +194,31 @@ PREDICTIVE_KEYS = frozenset({
 #: pipeline's ``_MUTABLE_ARTIFACT_KEYS`` denylist (minus ``label_col``,
 #: ``label``, and ``lookahead_days`` — all three moved to PREDICTIVE
 #: above, see that set's docstring for the evidence) plus this module's
-#: own stamp fields and the legacy stamp-field aliases the model repo
-#: reads as fallbacks (``model_fingerprint``, ``fingerprint``).
+#: own stamp fields, the legacy stamp-field aliases the model repo reads
+#: as fallbacks (``model_fingerprint``, ``fingerprint``), and the
+#: real-artifact census additions (see the PREDICTIVE set's docstring for
+#: the census sources):
+#:
+#: * ``best_iter`` — training-quality evidence read ONLY by the preflight
+#:   admission gate P-BEST-ITER (``preflight.py:698-772``, with an
+#:   ``eval_ic`` escape clause — the same gate that reads ``eval_ic``,
+#:   which both legacy impls classify operational). Scoring loads the
+#:   booster exclusively from ``booster_raw_json``
+#:   (``panel_scorer.py:251``), so ``best_iter`` cannot alter scores.
+#:   Present in the LIVE production artifact — unclassified, it would
+#:   make the real artifact unstampable.
+#: * ``cutoff_date`` / ``cutoff_embargo_days`` /
+#:   ``effective_train_cutoff_date`` / ``train_start_date`` /
+#:   ``effective_train_start_date`` / ``train_window`` — training-window
+#:   provenance consumed by leakage/staleness audit gates, not by scoring
+#:   or calibration; the trained function itself is already bound via the
+#:   booster bytes.
+#: * ``sentiment_runtime_gate_*`` / ``sentiment_gate_contract`` —
+#:   contract ATTESTATIONS: the admission gate only checks presence/kind
+#:   (``artifact_contract.py::has_sentiment_runtime_gate_contract``);
+#:   actual serving behavior derives from ``feature_cols`` (PREDICTIVE)
+#:   plus runtime config (``sentiment_runtime_gate_requirement``), never
+#:   from these stamped values.
 OPERATIONAL_KEYS = frozenset({
     # Paths, file hashes, fingerprint stamps.
     "metadata",
@@ -161,12 +231,19 @@ OPERATIONAL_KEYS = frozenset({
     "fingerprint",
     "config_fingerprint",
     "config_fingerprint_fields",
-    # Gate results / promotion state.
+    # Gate results / promotion state / contract attestations.
     "wf_gate_metadata",
     "promotion_status",
     "promotion_gating_reason",
     "sentiment_runtime_gate_contract",
     "sentiment_runtime_gate_trained",
+    "sentiment_runtime_gate_feature_cols",
+    "sentiment_runtime_gate_disabled_regimes",
+    "sentiment_runtime_gate_zeroed_rows",
+    "sentiment_runtime_gate_warmup_zeroed_rows",
+    "sentiment_runtime_gate_missing_regime_policy",
+    "sentiment_runtime_gate_policy",
+    "sentiment_gate_contract",
     # Training bookkeeping and evaluation evidence (post-training metadata:
     # stamping these changes the JSON bytes but not the predictions —
     # previously caused 3 calibrator rebinds in one day).
@@ -183,11 +260,19 @@ OPERATIONAL_KEYS = frozenset({
     "oos_std_ic",
     "oos_per_fold_ic",
     "eval_ic",
+    "best_iter",
     "cv_method",
     "cv_embargo_days",
     "cv_folds",
     "cv_n_splits",
     "train_run_id",
+    # Training-window provenance (audit/leakage-gate inputs).
+    "cutoff_date",
+    "cutoff_embargo_days",
+    "effective_train_cutoff_date",
+    "train_start_date",
+    "effective_train_start_date",
+    "train_window",
     "version",  # artifact-format version, not a model parameter
     "side_label",
 })

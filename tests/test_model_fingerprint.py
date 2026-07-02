@@ -15,6 +15,7 @@ import json
 import numpy as np
 import pytest
 
+from renquant_common.contracts.regime import RegimeLabel
 from renquant_common.model_fingerprint import (
     FINGERPRINT_SCHEMA_VERSION,
     OPERATIONAL_KEYS,
@@ -117,6 +118,60 @@ PIPELINE_DENYLIST_2026_07_02 = frozenset({
 })
 
 
+# REAL-ARTIFACT CENSUS (r2 review directive "inspect real artifact
+# families"). Top-level key sets read on 2026-07-02 from the live umbrella
+# tree:
+#
+# * the production scorer artifact
+#   ``data/panel-ltr-prod-alpha158-fund-fwd60d.json`` (trained 2026-05-18);
+# * the shadow-lane artifacts ``data/shadow_analyst/*.json`` (which carry
+#   the full CV/clip/preprocess field surface);
+# * every field ``RenQuant/scripts/train_production_model.py::
+#   build_artifact`` can write, including the conditional cutoff/window/
+#   side-label/sentiment/addendum branches.
+#
+# These pin that schema v1's tables are TOTAL over the real XGB/GBDT JSON
+# family: a real artifact must stamp without UnclassifiedKeyError, or
+# stage-1 dual-write (design §2c) would crash training instead of
+# shadowing it. (HF/PatchTST checkpoints are a separate, whole-file-bound
+# family per design §2a and are out of scope for these tables.)
+
+REAL_PROD_XGB_ARTIFACT_KEYS_2026_07_02 = frozenset({
+    "best_iter", "booster_raw_json", "config_fingerprint",
+    "config_fingerprint_fields", "feature_cols", "feature_means",
+    "feature_stds", "kind", "label_col", "lookahead_days", "panel_shape",
+    "params", "trained_date", "training_notes", "version",
+})
+
+REAL_SHADOW_XGB_ARTIFACT_KEYS_2026_07_02 = frozenset({
+    "best_iter", "booster_raw_json", "config_fingerprint",
+    "cv_embargo_days", "cv_folds", "cv_method", "cv_n_splits", "eval_ic",
+    "feature_cols", "feature_means", "feature_norm_kind",
+    "feature_preprocess_version", "feature_raw_clip_fit_split",
+    "feature_raw_clip_high", "feature_raw_clip_low",
+    "feature_source_contract", "feature_stds", "kind", "label_col",
+    "lookahead_days", "metadata", "oos_mean_ic", "oos_per_fold_ic",
+    "oos_std_ic", "panel_shape", "params", "train_run_id", "trained_date",
+    "training_notes", "training_train_ic", "version",
+})
+
+# Conditional writer fields from build_artifact not present in the two
+# snapshots above (cutoff/window provenance, side label, sentiment gate
+# attestations, Track B addendum).
+TRAIN_PRODUCTION_MODEL_CONDITIONAL_FIELDS_2026_07_02 = frozenset({
+    "cutoff_date", "cutoff_embargo_days", "effective_train_cutoff_date",
+    "train_start_date", "effective_train_start_date", "train_window",
+    "side_label", "feature_addendum_v1",
+    "sentiment_runtime_gate_contract",
+    "sentiment_runtime_gate_feature_cols",
+    "sentiment_runtime_gate_disabled_regimes",
+    "sentiment_runtime_gate_zeroed_rows",
+    "sentiment_runtime_gate_warmup_zeroed_rows",
+    "sentiment_runtime_gate_missing_regime_policy",
+    "sentiment_runtime_gate_policy",
+})
+
+
 def test_predictive_set_covers_model_repo_allowlist() -> None:
     """No predictive field the model repo hashes today is silently dropped
     in migration — the headline cross-repo regression fixture. A field the
@@ -168,6 +223,71 @@ def test_tables_are_disjoint() -> None:
     """Total classification: exactly one class per key."""
     overlap = PREDICTIVE_KEYS & OPERATIONAL_KEYS
     assert not overlap, f"keys classified in BOTH tables: {sorted(overlap)}"
+
+
+def test_tables_are_total_over_real_artifact_census() -> None:
+    """Every top-level key observed in the REAL production/shadow XGB
+    artifacts and every field the production trainer can write is
+    classified — a real artifact stamps without UnclassifiedKeyError, so
+    stage-1 dual-write shadows training instead of crashing it."""
+    census = (
+        REAL_PROD_XGB_ARTIFACT_KEYS_2026_07_02
+        | REAL_SHADOW_XGB_ARTIFACT_KEYS_2026_07_02
+        | TRAIN_PRODUCTION_MODEL_CONDITIONAL_FIELDS_2026_07_02
+    )
+    unclassified = census - PREDICTIVE_KEYS - OPERATIONAL_KEYS
+    assert not unclassified, (
+        f"real-artifact fields unclassified in schema v1: "
+        f"{sorted(unclassified)}"
+    )
+
+
+def test_real_prod_artifact_shape_stamps_and_verifies() -> None:
+    """Functional form of the census: a payload with the production
+    artifact's full key surface (plus the conditional writer fields)
+    round-trips stamp() → verify()."""
+    payload = _payload(
+        best_iter=100,
+        config_fingerprint="sha256:9333f7bf91d10cc4",
+        config_fingerprint_fields={"objective": "rank:pairwise"},
+        panel_shape={"rows": 100, "tickers": 10, "dates": 10},
+        training_train_ic=0.12,
+        train_run_id="run-123",
+        cv_method="purged_kfold",
+        cv_embargo_days=30,
+        cv_folds=[[0, 1], [2, 3]],
+        cv_n_splits=2,
+        eval_ic=0.05,
+        oos_mean_ic=0.04,
+        oos_std_ic=0.01,
+        oos_per_fold_ic=[0.03, 0.05],
+        feature_norm_kind=["legacy_full_z"] * 3,
+        feature_raw_clip_low=[-3.0, -3.0, -3.0],
+        feature_raw_clip_high=[3.0, 3.0, 3.0],
+        feature_raw_clip_fit_split="train",
+        feature_preprocess_version=2,
+        feature_source_contract={"raw": "apply clips then z-score"},
+        cutoff_date="2026-05-18",
+        cutoff_embargo_days=60,
+        effective_train_cutoff_date="2026-02-20",
+        train_start_date="2016-01-01",
+        effective_train_start_date="2016-01-01",
+        train_window={"start": "2016-01-01", "end": "2026-02-20"},
+        feature_addendum_v1={"track_b_features_active": ["pead_sue"]},
+        sentiment_runtime_gate_contract="trained_zeroing",
+        sentiment_runtime_gate_feature_cols=["sent_1"],
+        sentiment_runtime_gate_disabled_regimes=[RegimeLabel.BEAR.value],
+        sentiment_runtime_gate_zeroed_rows=42,
+        sentiment_runtime_gate_warmup_zeroed_rows=7,
+        sentiment_runtime_gate_missing_regime_policy="warmup_zero_only",
+        sentiment_runtime_gate_policy={RegimeLabel.BULL_CALM.value: True},
+    )
+    stamped = stamp(payload)
+    verify(
+        {**payload, **stamped},
+        stamped["model_content_fingerprint"],
+        stamped["fingerprint_schema_version"],
+    )
 
 
 # ---------------------------------------------------------------------------
