@@ -56,6 +56,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import warnings
 from pathlib import Path
 from typing import Any
 
@@ -536,3 +537,199 @@ def artifact_sha256(path: str | Path) -> str:
     training, which changes the file bytes without changing the model.
     """
     return "sha256:" + hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+# ---------------------------------------------------------------------------
+# DEPRECATED — verbatim 0.8.1 back-compat shims (M6 migration window).
+#
+# renquant-common 0.9.0 (PR #19/#20, the M6 schema-v1 rewrite) REMOVED four
+# names that renquant-pipeline main actively imports at
+# ``src/renquant_pipeline/kernel/panel_pipeline/panel_scorer.py:46`` (and
+# pins via ``tests/test_model_content_sha256_shared.py``):
+#
+#   * ``model_content_sha256_from_path``
+#   * ``stamp_artifact_metadata``
+#   * ``MUTABLE_ARTIFACT_KEYS``
+#   * ``PREDICTIVE_CONTENT_HINTS``
+#
+# That removal was premature sequencing: the M6 design's own dual-window
+# principle (design §2.4) keeps the legacy surface alive until the stage-2
+# pipeline migration PR moves the call sites to the schema-versioned
+# ``stamp()`` / ``verify()`` API. Until then, the whole-fleet dependency
+# resolution (one renquant-common version per venv) cannot converge on 0.9.x
+# while pipeline's imports break — so 0.9.1 restores these names.
+#
+# FIDELITY OVER IDEOLOGY: everything below is the VERBATIM 0.8.1 code path
+# (commit b96d190, the PR #18 extraction), deliberately ISOLATED from the
+# schema-v1 total-classification hasher above. It must NOT be "improved" to
+# route through :func:`model_content_sha256` (v1): the v1 hasher changes the
+# output for real payloads (``label_col``/``label``/``lookahead_days`` moved
+# to PREDICTIVE; canonicalization replaced ``default=str``; unclassified
+# keys raise instead of being hashed), and live artifacts/calibrators carry
+# stamps produced by the 0.8.1 semantics — stamped-hash agreement with live
+# artifacts is incident-hot (2026-05-27/06-22/07-01). The shims keep the
+# 0.8.1 silent-fallback semantics byte-for-byte, warts included, for the
+# migration window only.
+#
+# Every shim call emits a :class:`DeprecationWarning` naming the removal
+# point: these names are removed again in the M6 stage-2 pipeline migration
+# PR, once renquant-pipeline is on ``stamp()``/``verify()``.
+# ---------------------------------------------------------------------------
+
+_SHIM_DEPRECATION_NOTE = (
+    "is a deprecated verbatim renquant-common 0.8.1 back-compat shim kept "
+    "for the M6 migration window; it will be REMOVED in the M6 stage-2 "
+    "pipeline migration PR (when renquant-pipeline moves to the "
+    "schema-versioned stamp()/verify() API). Migrate new code to "
+    "renquant_common.model_fingerprint.stamp()/verify()."
+)
+
+#: DEPRECATED 0.8.1 denylist (verbatim). Superseded by the total
+#: classification tables :data:`PREDICTIVE_KEYS` / :data:`OPERATIONAL_KEYS`
+#: above — note the deliberate semantic differences (e.g. ``label_col`` is
+#: excluded here but PREDICTIVE in schema v1). Consumed by the legacy shims
+#: below and re-exported by renquant-pipeline's ``panel_scorer.py``.
+MUTABLE_ARTIFACT_KEYS = {
+    "metadata",
+    "wf_gate_metadata",
+    "artifact_path",
+    "artifact_sha256",
+    "artifact_fingerprint",
+    "model_content_fingerprint",
+    "config_fingerprint",
+    "config_fingerprint_fields",
+    "trained_date",
+    "training_notes",
+    "label",
+    "label_col",
+    "lookahead_days",
+    "panel_shape",
+    "n_train_rows",
+    "training_train_ic",
+    "val_mean_ic",
+    "val_median_ic",
+    "test_mean_ic",
+    "test_median_ic",
+    "oos_mean_ic",
+    # P-PANEL-CONTRACT acceptance fields (2026-05-30 Bug D fix).
+    # These are pure post-training metadata: CV bookkeeping, OOS evidence,
+    # promotion gates, sentiment-contract markers, audit IDs. Stamping any
+    # of these changes the JSON bytes but does NOT change the model's
+    # predictions — must be excluded from model_content_fingerprint so the
+    # calibrator binding survives metadata edits (previously caused 3
+    # calibrator rebinds in one day).
+    "cv_method",
+    "cv_embargo_days",
+    "cv_folds",
+    "cv_n_splits",
+    "oos_std_ic",
+    "oos_per_fold_ic",
+    "eval_ic",
+    "train_run_id",
+    "sentiment_runtime_gate_contract",
+    "sentiment_runtime_gate_trained",
+    "promotion_status",
+    "promotion_gating_reason",
+    "version",  # artifact-format version, not a model parameter
+    "side_label",
+}
+
+#: DEPRECATED 0.8.1 predictive-content hints (verbatim). Superseded by
+#: :data:`PREDICTIVE_KEYS` above.
+PREDICTIVE_CONTENT_HINTS = {
+    "booster_raw_json",
+    "feature_cols",
+    "feature_columns",
+    "feature_means",
+    "feature_stds",
+    "feature_norm_kind",
+    "feature_norm_kinds",
+    "feature_raw_clip_low",
+    "feature_raw_clip_high",
+    "coef",
+    "intercept",
+    "clip_sigma",
+    "state_dict",
+    "config_dict",
+    "model_bytes",
+    "model_bytes_b64",
+}
+
+
+def _legacy_model_content_sha256(payload: dict[str, Any]) -> str:
+    """Verbatim 0.8.1 ``model_content_sha256`` (denylist + ``default=str``).
+
+    Internal engine of the deprecated shims — NOT the schema-v1 hasher.
+    Kept private: the public ``model_content_sha256`` name is the v1 API.
+    """
+    content = {
+        k: v for k, v in payload.items()
+        if k not in MUTABLE_ARTIFACT_KEYS
+    }
+    if not any(k in content for k in PREDICTIVE_CONTENT_HINTS):
+        raise ValueError("payload has no recognizable scorer prediction content")
+    blob = json.dumps(content, sort_keys=True, separators=(",", ":"), default=str)
+    return "sha256:" + hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
+def _legacy_model_content_sha256_from_path(path: str | Path) -> str:
+    """Verbatim 0.8.1 ``model_content_sha256_from_path`` (silent fallbacks)."""
+    p = Path(path)
+    try:
+        payload = json.loads(p.read_text())
+    except Exception:
+        return artifact_sha256(p)
+    if not isinstance(payload, dict):
+        return artifact_sha256(p)
+    try:
+        return _legacy_model_content_sha256(payload)
+    except ValueError:
+        return artifact_sha256(p)
+
+
+def model_content_sha256_from_path(path: str | Path) -> str:
+    """DEPRECATED: return 0.8.1 model-content hash for JSON artifacts,
+    full-file hash otherwise (verbatim 0.8.1 semantics, silent fallbacks
+    included). See the shim section header for the removal point."""
+    warnings.warn(
+        "model_content_sha256_from_path() " + _SHIM_DEPRECATION_NOTE,
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    return _legacy_model_content_sha256_from_path(path)
+
+
+def stamp_artifact_metadata(
+    metadata: dict | None,
+    path: str | Path,
+    payload: dict[str, Any] | None = None,
+) -> dict:
+    """DEPRECATED: return metadata with path + fingerprint fields for
+    runtime contracts (verbatim 0.8.1 semantics — the stamped
+    ``model_content_fingerprint`` uses the 0.8.1 denylist hash, agreeing
+    with live artifacts). See the shim section header for the removal
+    point."""
+    warnings.warn(
+        "stamp_artifact_metadata() " + _SHIM_DEPRECATION_NOTE,
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    meta = dict(metadata or {})
+    nested = meta.get("metadata")
+    if isinstance(nested, dict):
+        for key, value in nested.items():
+            meta.setdefault(key, value)
+    sha = artifact_sha256(path)
+    try:
+        content_sha = (
+            _legacy_model_content_sha256(payload)
+            if isinstance(payload, dict)
+            else _legacy_model_content_sha256_from_path(path)
+        )
+    except ValueError:
+        content_sha = sha
+    meta.setdefault("artifact_path", str(Path(path)))
+    meta.setdefault("artifact_sha256", sha)
+    meta.setdefault("artifact_fingerprint", sha)
+    meta.setdefault("model_content_fingerprint", content_sha)
+    return meta
