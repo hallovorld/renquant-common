@@ -83,6 +83,41 @@ FINGERPRINT_SCHEMA_VERSION = 1
 #:   content, not bookkeeping.
 #: * ``params`` — in the model repo's allowlist only, but the pipeline's
 #:   subtractive impl also hashes it by default; uncontroversial.
+#: * ``lookahead_days`` — MOVED here from OPERATIONAL (r2 correction).
+#:   Traced to real usage: ``renquant_model_common.global_calibrator``'s
+#:   ``_native_lookahead_days()`` reads this field directly from artifact
+#:   metadata, and ``expected_return``/``expected_return_vec`` use it to
+#:   RESCALE the calibrated expected-return output by the ratio
+#:   ``horizon_days / native`` whenever they differ. A stamped
+#:   ``lookahead_days`` that drifts from the artifact's true label horizon
+#:   therefore mechanically changes the calibrator's numeric output at
+#:   inference time — the definition of predictive content, not inert
+#:   bookkeeping. Inheriting the old pipeline denylist's classification
+#:   without checking this call site is exactly the failure mode this
+#:   fingerprint module exists to close.
+#: * ``label`` — MOVED here from OPERATIONAL (r2 correction). Multiple
+#:   artifact-producing scripts (``RenQuant/scripts/qlib_linear_baseline.py``,
+#:   ``backfill_doe_to_mlflow.py``, ``portfolio_simulation_multihorizon.py``)
+#:   stamp this field with the same role as ``label_col`` — a description
+#:   of the target/horizon the artifact was trained against (e.g.
+#:   ``"multi_horizon_ensemble (fwd_5d + fwd_20d + fwd_60d, ...)"``) — for
+#:   artifact families that use a free-text ``label`` instead of a strict
+#:   ``label_col`` column name. Since ``label_col`` is already PREDICTIVE
+#:   for the same reason (target-definition identity), ``label`` must be
+#:   too, for consistency across artifact families that use either field.
+#: * ``side_label`` — investigated and CONFIRMED OPERATIONAL: it identifies
+#:   which experimental/side training CONFIG produced the artifact
+#:   (``renquant_model_gbdt/pipeline.py``'s ``side_label`` field,
+#:   ``renquant_pipeline/pp_training_full.py``'s side-config-path safety
+#:   check) — lineage/provenance bookkeeping used to prevent a side
+#:   experiment's output from being mistaken for a production artifact. No
+#:   call site was found where its VALUE changes how predictions are
+#:   interpreted; it stays in OPERATIONAL_KEYS below.
+#: * ``version`` — investigated: only known reference is the pipeline's
+#:   own denylist comment ("artifact-format version, not a model
+#:   parameter"); no call site found where it selects output
+#:   interpretation. Stays in OPERATIONAL_KEYS below pending contrary
+#:   evidence.
 PREDICTIVE_KEYS = frozenset({
     "booster_raw_json",
     "params",
@@ -96,6 +131,8 @@ PREDICTIVE_KEYS = frozenset({
     "feature_raw_clip_low",
     "feature_raw_clip_high",
     "label_col",
+    "label",
+    "lookahead_days",
     "coef",
     "intercept",
     "clip_sigma",
@@ -108,15 +145,10 @@ PREDICTIVE_KEYS = frozenset({
 #: Fields that never change predictions: paths, file hashes, gate results,
 #: stamps, CV/OOS bookkeeping, promotion state, audit IDs. Union of the
 #: pipeline's ``_MUTABLE_ARTIFACT_KEYS`` denylist (minus ``label_col``,
-#: moved to PREDICTIVE above) plus this module's own stamp fields and the
-#: legacy stamp-field aliases the model repo reads as fallbacks
-#: (``model_fingerprint``, ``fingerprint``).
-#:
-#: * ``label`` and ``lookahead_days`` stay OPERATIONAL per the pipeline's
-#:   existing classification (the only impl that knows them; the model
-#:   repo's allowlist never hashed either). If stage-2 triage against real
-#:   artifacts shows ``label`` mirrors ``label_col``, reclassify with a
-#:   promotion record + schema bump per design §2c.
+#: ``label``, and ``lookahead_days`` — all three moved to PREDICTIVE
+#: above, see that set's docstring for the evidence) plus this module's
+#: own stamp fields and the legacy stamp-field aliases the model repo
+#: reads as fallbacks (``model_fingerprint``, ``fingerprint``).
 OPERATIONAL_KEYS = frozenset({
     # Paths, file hashes, fingerprint stamps.
     "metadata",
@@ -140,8 +172,6 @@ OPERATIONAL_KEYS = frozenset({
     # previously caused 3 calibrator rebinds in one day).
     "trained_date",
     "training_notes",
-    "label",
-    "lookahead_days",
     "panel_shape",
     "n_train_rows",
     "training_train_ic",
@@ -371,28 +401,40 @@ def stamp(payload: dict[str, Any]) -> dict[str, Any]:
 def verify(
     payload: dict[str, Any],
     expected: str,
-    expected_version: int | None = None,
+    expected_version: int,
 ) -> None:
     """Check ``payload`` against a stamped fingerprint; raise on failure.
 
     :param payload: the artifact payload under verification.
     :param expected: the stamped ``model_content_fingerprint``.
-    :param expected_version: the stamped ``fingerprint_schema_version``,
-        if the artifact carries one. A gap against
+    :param expected_version: the stamped ``fingerprint_schema_version``.
+        MANDATORY — a caller must extract this from the artifact's own
+        stamp (see :func:`stamp`) and pass it explicitly. There is no
+        optional/omitted form: an omitted or malformed version is exactly
+        the "one forgotten argument bypasses the whole migration contract"
+        hole this function must never reopen. A gap against
         :data:`FINGERPRINT_SCHEMA_VERSION` raises :class:`VersionGapError`
         BEFORE any content comparison — a version gap is not evidence
-        about content.
-    :raises VersionGapError: schema-version gap (re-stamp, auditable).
+        about content. Verifying an artifact with NO stamped version at
+        all (a pre-schema-v1 artifact) is out of scope for this function;
+        use an explicitly named legacy path if that migration case is
+        needed — never silently accept a versionless stamp here.
+    :raises VersionGapError: schema-version gap, or a malformed
+        (non-integer, or bool masquerading as int) version value
+        (re-stamp, auditable).
     :raises MismatchError: content fingerprint differs (with per-field
         diff hint).
     :raises UnclassifiedKeyError: the payload contains a key the current
         tables do not classify — fails closed, never ignored (design §2b
         verify-time rule).
     """
-    if (
-        expected_version is not None
-        and expected_version != FINGERPRINT_SCHEMA_VERSION
-    ):
+    if not isinstance(expected_version, int) or isinstance(expected_version, bool):
+        # Reject non-integer versions (including the classic Python trap
+        # where 1.0 == 1 and True == 1 would otherwise silently coerce
+        # through an equality check) rather than let a malformed stamp
+        # value pass or fail unpredictably.
+        raise VersionGapError(expected_version, FINGERPRINT_SCHEMA_VERSION)
+    if expected_version != FINGERPRINT_SCHEMA_VERSION:
         raise VersionGapError(expected_version, FINGERPRINT_SCHEMA_VERSION)
     actual = model_content_sha256(payload)
     if actual != expected:

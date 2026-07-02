@@ -137,19 +137,31 @@ def test_predictive_set_covers_pipeline_predictive_hints() -> None:
     )
 
 
-def test_operational_set_covers_pipeline_denylist_except_label_col() -> None:
+def test_operational_set_covers_pipeline_denylist_except_reclassified_fields() -> None:
     """Every field the pipeline denylist excludes today stays OPERATIONAL,
-    with ONE deliberate exception: ``label_col`` was the direct conflict
-    between the two impls (model repo hashed it, pipeline excluded it) and
-    is resolved PREDICTIVE — the calibrator fit is bound to the label
-    horizon, and the model repo owns modeling-contract judgment."""
-    expected_operational = PIPELINE_DENYLIST_2026_07_02 - {"label_col"}
+    with THREE deliberate exceptions resolved PREDICTIVE: ``label_col`` (the
+    direct conflict between the two impls — model repo hashed it, pipeline
+    excluded it), ``lookahead_days`` (r2 correction: traced to
+    ``global_calibrator.expected_return``'s horizon-rescaling logic, which
+    reads this field to scale calibrated output — a mechanical, real
+    predictive effect, not inert bookkeeping), and ``label`` (r2 correction:
+    multiple artifact-producing scripts use it as the same
+    target-definition descriptor label_col serves for other artifact
+    families). Preserving the OLD denylist's classification is not evidence
+    it was correct — that denylist is one of the conflicting
+    implementations this module replaces; each exception here required
+    tracing a real call site, not inheriting the old table."""
+    expected_operational = PIPELINE_DENYLIST_2026_07_02 - {
+        "label_col", "label", "lookahead_days",
+    }
     missing = expected_operational - OPERATIONAL_KEYS
     assert not missing, (
         f"pipeline denylist fields dropped from OPERATIONAL_KEYS: "
         f"{sorted(missing)}"
     )
     assert "label_col" in PREDICTIVE_KEYS
+    assert "label" in PREDICTIVE_KEYS
+    assert "lookahead_days" in PREDICTIVE_KEYS
 
 
 def test_tables_are_disjoint() -> None:
@@ -172,8 +184,11 @@ def _payload(**overrides) -> dict:
         "params": {"objective": "rank:pairwise", "max_depth": 4},
         "booster_raw_json": '{"fake": "booster"}',
         "label_col": "fwd_60d_excess",
+        "label": "fwd_60d_excess",
+        "lookahead_days": 60,
         "trained_date": "2026-06-01",
         "metadata": {"note": "irrelevant"},
+        "side_label": "specialist_wf_bull_2026-06-01",
     }
     base.update(overrides)
     return base
@@ -219,6 +234,7 @@ def test_operational_mutations_do_not_change_fingerprint() -> None:
         artifact_path="/somewhere/else.json",
         model_content_fingerprint="sha256:deadbeef",
         fingerprint_schema_version=FINGERPRINT_SCHEMA_VERSION,
+        side_label="specialist_wf_bear_2026-07-02",
     ))
     assert base == mutated
 
@@ -231,6 +247,8 @@ def test_operational_mutations_do_not_change_fingerprint() -> None:
         {"feature_cols": ["a", "b", "c", "d"]},
         {"feature_means": [0.1, -1.5, 2.26]},
         {"label_col": "fwd_20d_excess"},
+        {"label": "fwd_20d_excess"},
+        {"lookahead_days": 20},
         {"kind": "panel_ltr_lightgbm"},
     ],
 )
@@ -246,6 +264,38 @@ def test_label_col_change_rebinds_calibrator() -> None:
     model repo's semantics win; the pipeline previously excluded it)."""
     assert model_content_sha256(_payload()) != model_content_sha256(
         _payload(label_col="fwd_20d_excess")
+    )
+
+
+def test_lookahead_days_change_rebinds_calibrator() -> None:
+    """r2 correction, pinned as behavior: renquant_model_common.
+    global_calibrator.expected_return()/expected_return_vec() read a
+    stamped ``lookahead_days`` directly to RESCALE the calibrated output by
+    ``horizon_days / native`` whenever they differ — a drifted
+    ``lookahead_days`` mechanically changes the calibrator's numeric
+    output, so it must change the pairing identity like ``label_col``."""
+    assert model_content_sha256(_payload()) != model_content_sha256(
+        _payload(lookahead_days=20)
+    )
+
+
+def test_label_change_rebinds_calibrator() -> None:
+    """r2 correction: artifact families that stamp a free-text ``label``
+    instead of ``label_col`` (e.g. multi-horizon ensembles) must get the
+    same pairing-identity protection ``label_col`` already has."""
+    assert model_content_sha256(_payload()) != model_content_sha256(
+        _payload(label="multi_horizon_ensemble (fwd_5d + fwd_20d + fwd_60d)")
+    )
+
+
+def test_side_label_change_does_not_change_fingerprint() -> None:
+    """side_label identifies which experimental/side training config
+    produced the artifact (lineage/provenance bookkeeping used to prevent a
+    side-experiment's output from being mistaken for a production
+    artifact) — it does not select how predictions are interpreted, so its
+    value must not change the fingerprint."""
+    assert model_content_sha256(_payload()) == model_content_sha256(
+        _payload(side_label="specialist_wf_choppy_2026-07-02")
     )
 
 
@@ -438,13 +488,52 @@ def test_mismatch_field_digests_localize_the_divergent_field() -> None:
     assert differing == {"booster_raw_json"}
 
 
-def test_verify_with_no_version_still_checks_content() -> None:
-    """``expected_version=None`` supports pre-schema-stamp artifacts during
-    migration: content is still checked."""
+def test_verify_requires_expected_version_argument() -> None:
+    """r2 correction: expected_version is now a MANDATORY positional
+    argument, not an optional one defaulting to None. Omitting it must
+    fail loudly at the call site (Python's own argument-binding error) —
+    the prior optional form was exactly the "one forgotten argument
+    bypasses the whole migration contract" hole the review required
+    closed. There is no default/omitted-version form of verify() left."""
     payload = _payload()
-    verify(payload, model_content_sha256(payload))
-    with pytest.raises(MismatchError):
-        verify(payload, "sha256:" + "0" * 64)
+    with pytest.raises(TypeError):
+        verify(payload, model_content_sha256(payload))
+
+
+def test_verify_rejects_older_version_as_gap_not_mismatch() -> None:
+    """An OLDER stamped version than currently supported is a version
+    gap (re-stamp under vN), not silently accepted and not reported as a
+    content mismatch — same treatment as a newer version."""
+    payload = _payload()
+    stamped = stamp(payload)
+    with pytest.raises(VersionGapError) as exc_info:
+        verify(
+            payload,
+            stamped["model_content_fingerprint"],
+            expected_version=FINGERPRINT_SCHEMA_VERSION - 1,
+        )
+    assert not isinstance(exc_info.value, MismatchError)
+    assert exc_info.value.stamped_version == FINGERPRINT_SCHEMA_VERSION - 1
+
+
+@pytest.mark.parametrize(
+    "bad_version",
+    [1.0, "1", None, True, False, [1], {}],
+)
+def test_verify_rejects_non_integer_version(bad_version) -> None:
+    """A malformed version value (float, string, None, bool, or any other
+    non-plain-int) must fail closed as a version gap rather than silently
+    coercing through an equality check (the classic Python trap where
+    ``1.0 == 1`` and ``True == 1``) or raising an unrelated TypeError deep
+    inside comparison logic."""
+    payload = _payload()
+    stamped = stamp(payload)
+    with pytest.raises(VersionGapError):
+        verify(
+            payload,
+            stamped["model_content_fingerprint"],
+            expected_version=bad_version,
+        )
 
 
 # ---------------------------------------------------------------------------
