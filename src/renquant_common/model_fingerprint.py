@@ -1,97 +1,127 @@
-"""Canonical model-content fingerprint — single source of truth.
+"""Shared model-content fingerprint — total classification, schema-versioned.
 
-Extracted 2026-07-01 after a recurring production incident: the calibrator
-fit-time stamp (``renquant-model``'s ``fit_calibrator_alpha158_fund.py``)
-and the runtime scorer-binding check (``renquant-pipeline``'s
-``panel_scorer.py``, called from ``job_panel_scoring.py``'s
-``_assert_calibrator_matches_scorer``) independently hand-copied
-``model_content_sha256()`` — an ALLOWLIST-style implementation in
-renquant-model vs. a DENYLIST-style implementation in renquant-pipeline —
-hashing DIFFERENT field sets for the same logical concept. A calibrator
-fit by one could never match the runtime check by another, by
-construction. This fail-closed monthly whenever
-``monthly_calibrator_refresh.sh`` re-fit the calibrator (hit 2026-05-27,
-2026-06-22, 2026-07-01).
+Implements schema v1 of the contract designed in renquant-orchestrator
+``doc/design/2026-07-02-m6-fingerprint-unification.md`` (M6/R2 of the
+unified plan). Three recurring fail-closed no-trade incidents (2026-05-27,
+2026-06-22, 2026-07-01) traced to ``model_content_sha256`` disagreeing
+across repos:
 
-Both ``renquant-model`` and ``renquant-pipeline`` depend on
-``renquant-common`` already, so this module is the natural shared home:
-importing the SAME function from both repos makes the fit-time stamp and
-the runtime check structurally guaranteed to agree, forever — not just
-coincidentally aligned today. Do not re-fork a local copy of this logic;
+* renquant-pipeline ``panel_scorer.py`` — SUBTRACTIVE: hash everything not
+  on a mutable-key denylist, so any NEW key is hashed by default
+  (false MISMATCH when an operational field appears — the observed
+  incident class).
+* renquant-model ``fit_calibrator_alpha158_fund.py`` — ADDITIVE: hash an
+  explicit allowlist, so any NEW key is ignored by default (false MATCH
+  when a predictive field appears — the silent, more dangerous class).
+
+Both silent defaults are removed here by TOTAL CLASSIFICATION: every
+top-level payload key MUST appear in exactly one of :data:`PREDICTIVE_KEYS`
+or :data:`OPERATIONAL_KEYS`. An unclassified key is a hard error at stamp
+time and at verify time (:class:`UnclassifiedKeyError`) — never a silent
+default in either direction.
+
+Schema v1 scope (per the design's staged rollout — migrations of call
+sites are separate PRs):
+
+* Classification is over TOP-LEVEL keys; a nested value (e.g. ``params``,
+  ``metadata``) inherits its top-level key's classification as one atomic
+  unit — the design §2a's "explicitly frozen, named sub-structure treated
+  as an atomic PREDICTIVE/OPERATIONAL unit". Finer-grained key-path tables
+  and artifact-family scoping land with a ``FINGERPRINT_SCHEMA_VERSION``
+  bump per design §2b.
+* Floats are canonicalized EXACTLY via the shortest round-tripping decimal
+  representation (``repr(float)``, the ``json`` module's float encoding) —
+  never lossy rounding (design §2b, r3 correction).
+* Non-finite floats (``NaN``/``Infinity``) in the PREDICTIVE subset are
+  REJECTED at stamp time (:class:`NonFiniteValueError`) — an invalid model
+  state must not be blessed with a stable fingerprint (design §2b).
+* A schema-version gap at verify time is its own explicit error
+  (:class:`VersionGapError` — "re-stamp under vN", an auditable
+  operation), never conflated with a content mismatch
+  (:class:`MismatchError`).
+
+Ownership split (design §2b): the classification TABLES are a modeling
+contract — the model repo reviews changes to them; the MECHANISM
+(canonicalization, hashing, version stamping) is shared infrastructure
+owned here. Any table change requires a ``FINGERPRINT_SCHEMA_VERSION``
+bump.
+
+This supersedes the 2026-07-01 hot-fix extraction (renquant-common PR
+#18), which copied the pipeline's subtractive denylist verbatim and so
+retained its silent default. Do not re-fork this logic into other repos;
 import it from here.
-
-Panel-LTR artifacts are JSON files that later acquire operational
-metadata (WF gate results, file hashes, paths, promotion state).
-Calibrators are fitted to the model's SCORE DISTRIBUTION, not to that
-mutable metadata — so the fingerprint must hash only the content that
-changes the scorer's predictions, and must be invariant to metadata-only
-edits (stamping ``cv_method``, ``promotion_status``, docstrings, etc.).
 """
 from __future__ import annotations
 
 import hashlib
 import json
+import math
 from pathlib import Path
 from typing import Any
 
+FINGERPRINT_SCHEMA_VERSION = 1
 
-def artifact_sha256(path: str | Path) -> str:
-    """Full-file artifact hash for tamper/audit checks.
-
-    Do not use this as the scorer/calibrator pairing identity: acceptance
-    tools append mutable metadata such as ``wf_gate_metadata`` after training,
-    which changes the file bytes without changing the model.
-    """
-    return "sha256:" + hashlib.sha256(Path(path).read_bytes()).hexdigest()
-
-
-MUTABLE_ARTIFACT_KEYS = {
-    "metadata",
-    "wf_gate_metadata",
-    "artifact_path",
-    "artifact_sha256",
-    "artifact_fingerprint",
-    "model_content_fingerprint",
-    "config_fingerprint",
-    "config_fingerprint_fields",
-    "trained_date",
-    "training_notes",
-    "label",
-    "label_col",
-    "lookahead_days",
-    "panel_shape",
-    "n_train_rows",
-    "training_train_ic",
-    "val_mean_ic",
-    "val_median_ic",
-    "test_mean_ic",
-    "test_median_ic",
-    "oos_mean_ic",
-    # P-PANEL-CONTRACT acceptance fields (2026-05-30 Bug D fix).
-    # These are pure post-training metadata: CV bookkeeping, OOS evidence,
-    # promotion gates, sentiment-contract markers, audit IDs. Stamping any
-    # of these changes the JSON bytes but does NOT change the model's
-    # predictions — must be excluded from model_content_fingerprint so the
-    # calibrator binding survives metadata edits (previously caused 3
-    # calibrator rebinds in one day).
-    "cv_method",
-    "cv_embargo_days",
-    "cv_folds",
-    "cv_n_splits",
-    "oos_std_ic",
-    "oos_per_fold_ic",
-    "eval_ic",
-    "train_run_id",
-    "sentiment_runtime_gate_contract",
-    "sentiment_runtime_gate_trained",
-    "promotion_status",
-    "promotion_gating_reason",
-    "version",  # artifact-format version, not a model parameter
-    "side_label",
-}
-
-PREDICTIVE_CONTENT_HINTS = {
+#: Fields whose value changes what (or how) the artifact predicts, or the
+#: pairing identity downstream consumers (calibrators) are bound to.
+#: Union of the two divergent implementations' predictive knowledge as of
+#: 2026-07-02: renquant-model's explicit allowlist + renquant-pipeline's
+#: ``_PREDICTIVE_CONTENT_HINTS``.
+#:
+#: Classification judgment calls (see the tests' cross-repo fixtures):
+#:
+#: * ``label_col`` — the one direct CONFLICT between the two impls: the
+#:   model repo's allowlist HASHES it, the pipeline's denylist EXCLUDES
+#:   it. Resolved PREDICTIVE: the calibrator fit is bound to the label
+#:   horizon (``fit_calibrator_alpha158_fund._infer_raw_er_label`` derives
+#:   the raw-ER column from ``label_col``), so an artifact re-labeled to a
+#:   different horizon must NOT silently keep pairing with the old
+#:   calibrator; and the model repo owns modeling-contract judgment per
+#:   design §2b.
+#: * ``kind`` — known to neither table but hashed today by the pipeline's
+#:   subtractive impl (absent from its denylist) and present in real
+#:   artifacts; it selects which scorer interprets the artifact, so it is
+#:   content, not bookkeeping.
+#: * ``params`` — in the model repo's allowlist only, but the pipeline's
+#:   subtractive impl also hashes it by default; uncontroversial.
+#: * ``lookahead_days`` — MOVED here from OPERATIONAL (r2 correction).
+#:   Traced to real usage: ``renquant_model_common.global_calibrator``'s
+#:   ``_native_lookahead_days()`` reads this field directly from artifact
+#:   metadata, and ``expected_return``/``expected_return_vec`` use it to
+#:   RESCALE the calibrated expected-return output by the ratio
+#:   ``horizon_days / native`` whenever they differ. A stamped
+#:   ``lookahead_days`` that drifts from the artifact's true label horizon
+#:   therefore mechanically changes the calibrator's numeric output at
+#:   inference time — the definition of predictive content, not inert
+#:   bookkeeping. Inheriting the old pipeline denylist's classification
+#:   without checking this call site is exactly the failure mode this
+#:   fingerprint module exists to close.
+#: * ``label`` — MOVED here from OPERATIONAL (r2 correction). Multiple
+#:   artifact-producing scripts (``RenQuant/scripts/qlib_linear_baseline.py``,
+#:   ``backfill_doe_to_mlflow.py``, ``portfolio_simulation_multihorizon.py``)
+#:   stamp this field with the same role as ``label_col`` — a description
+#:   of the target/horizon the artifact was trained against (e.g.
+#:   ``"multi_horizon_ensemble (fwd_5d + fwd_20d + fwd_60d, ...)"``) — for
+#:   artifact families that use a free-text ``label`` instead of a strict
+#:   ``label_col`` column name. Since ``label_col`` is already PREDICTIVE
+#:   for the same reason (target-definition identity), ``label`` must be
+#:   too, for consistency across artifact families that use either field.
+#: * ``side_label`` — investigated and CONFIRMED OPERATIONAL: it identifies
+#:   which experimental/side training CONFIG produced the artifact
+#:   (``renquant_model_gbdt/pipeline.py``'s ``side_label`` field,
+#:   ``renquant_pipeline/pp_training_full.py``'s side-config-path safety
+#:   check) — lineage/provenance bookkeeping used to prevent a side
+#:   experiment's output from being mistaken for a production artifact. No
+#:   call site was found where its VALUE changes how predictions are
+#:   interpreted; it stays in OPERATIONAL_KEYS below.
+#: * ``version`` — investigated: only known reference is the pipeline's
+#:   own denylist comment ("artifact-format version, not a model
+#:   parameter"); no call site found where it selects output
+#:   interpretation. Stays in OPERATIONAL_KEYS below pending contrary
+#:   evidence.
+PREDICTIVE_KEYS = frozenset({
     "booster_raw_json",
+    "params",
+    "kind",
     "feature_cols",
     "feature_columns",
     "feature_means",
@@ -100,6 +130,9 @@ PREDICTIVE_CONTENT_HINTS = {
     "feature_norm_kinds",
     "feature_raw_clip_low",
     "feature_raw_clip_high",
+    "label_col",
+    "label",
+    "lookahead_days",
     "coef",
     "intercept",
     "clip_sigma",
@@ -107,69 +140,314 @@ PREDICTIVE_CONTENT_HINTS = {
     "config_dict",
     "model_bytes",
     "model_bytes_b64",
-}
+})
+
+#: Fields that never change predictions: paths, file hashes, gate results,
+#: stamps, CV/OOS bookkeeping, promotion state, audit IDs. Union of the
+#: pipeline's ``_MUTABLE_ARTIFACT_KEYS`` denylist (minus ``label_col``,
+#: ``label``, and ``lookahead_days`` — all three moved to PREDICTIVE
+#: above, see that set's docstring for the evidence) plus this module's
+#: own stamp fields and the legacy stamp-field aliases the model repo
+#: reads as fallbacks (``model_fingerprint``, ``fingerprint``).
+OPERATIONAL_KEYS = frozenset({
+    # Paths, file hashes, fingerprint stamps.
+    "metadata",
+    "artifact_path",
+    "artifact_sha256",
+    "artifact_fingerprint",
+    "model_content_fingerprint",
+    "fingerprint_schema_version",
+    "model_fingerprint",
+    "fingerprint",
+    "config_fingerprint",
+    "config_fingerprint_fields",
+    # Gate results / promotion state.
+    "wf_gate_metadata",
+    "promotion_status",
+    "promotion_gating_reason",
+    "sentiment_runtime_gate_contract",
+    "sentiment_runtime_gate_trained",
+    # Training bookkeeping and evaluation evidence (post-training metadata:
+    # stamping these changes the JSON bytes but not the predictions —
+    # previously caused 3 calibrator rebinds in one day).
+    "trained_date",
+    "training_notes",
+    "panel_shape",
+    "n_train_rows",
+    "training_train_ic",
+    "val_mean_ic",
+    "val_median_ic",
+    "test_mean_ic",
+    "test_median_ic",
+    "oos_mean_ic",
+    "oos_std_ic",
+    "oos_per_fold_ic",
+    "eval_ic",
+    "cv_method",
+    "cv_embargo_days",
+    "cv_folds",
+    "cv_n_splits",
+    "train_run_id",
+    "version",  # artifact-format version, not a model parameter
+    "side_label",
+})
 
 
-def model_content_sha256(payload: dict[str, Any]) -> str:
-    """Stable scorer identity over immutable model content.
+class FingerprintError(ValueError):
+    """Base error for the fingerprint contract.
 
-    Panel artifacts are JSON files that later acquire operational metadata
-    (WF gate results, file hashes, paths). Calibrators are fitted to the model
-    score distribution, not to that mutable metadata. Hash only the content
-    that changes the scorer's predictions.
-
-    Callers on both the fit-time (calibrator training) side and the
-    runtime (scorer-binding check) side MUST call this same function —
-    that is the whole point of it living in ``renquant-common`` instead of
-    being hand-copied per repo.
+    Subclasses ``ValueError`` so legacy call sites wrapping the old
+    implementations in ``except ValueError`` keep failing closed during
+    migration.
     """
-    content = {
-        k: v for k, v in payload.items()
-        if k not in MUTABLE_ARTIFACT_KEYS
-    }
-    if not any(k in content for k in PREDICTIVE_CONTENT_HINTS):
-        raise ValueError("payload has no recognizable scorer prediction content")
-    blob = json.dumps(content, sort_keys=True, separators=(",", ":"), default=str)
+
+
+class UnclassifiedKeyError(FingerprintError):
+    """A payload key is in neither PREDICTIVE_KEYS nor OPERATIONAL_KEYS.
+
+    Raised at stamp time AND at verify time — the total-classification
+    contract's core property (design §2b): never silently hash a new key
+    (the pipeline's false-MISMATCH default), never silently ignore one
+    (the model repo's false-MATCH default).
+    """
+
+    def __init__(self, keys: list[str]) -> None:
+        self.keys = tuple(sorted(str(k) for k in keys))
+        super().__init__(
+            "unclassified payload key(s) "
+            f"{list(self.keys)}: every key must be classified in "
+            "renquant_common.model_fingerprint.PREDICTIVE_KEYS or "
+            "OPERATIONAL_KEYS (a modeling-contract change reviewed by the "
+            "model repo, with a FINGERPRINT_SCHEMA_VERSION bump). Refusing "
+            "to guess — silent defaults are the root cause of the "
+            "2026-05-27/06-22/07-01 incidents."
+        )
+
+
+class NoPredictiveContentError(FingerprintError):
+    """The payload contains no PREDICTIVE-classified field at all."""
+
+
+class NonFiniteValueError(FingerprintError):
+    """A PREDICTIVE field contains NaN/Infinity — an invalid model state.
+
+    Design §2b: rejected at stamp time (the artifact is never written),
+    never canonicalized into a stable, hashable representation.
+    """
+
+    def __init__(self, key_path: str, value: float) -> None:
+        self.key_path = key_path
+        super().__init__(
+            f"non-finite value {value!r} in PREDICTIVE field {key_path!r}: "
+            "this indicates an invalid model state (training failure or "
+            "numerical instability) and must not be fingerprinted"
+        )
+
+
+class VersionGapError(FingerprintError):
+    """The artifact was stamped under a different fingerprint schema.
+
+    Its own explicit error, deliberately NOT a :class:`MismatchError`
+    (design §2.3): the remedy is "re-stamp under v{supported}" — an
+    auditable operation — not a content investigation.
+    """
+
+    def __init__(self, stamped_version: Any, supported_version: int) -> None:
+        self.stamped_version = stamped_version
+        self.supported_version = supported_version
+        super().__init__(
+            f"fingerprint schema version gap: artifact stamped under "
+            f"{stamped_version!r} but this module implements "
+            f"v{supported_version}; re-stamp the artifact under "
+            f"v{supported_version} (auditable operation) — do not treat "
+            "this as a content mismatch"
+        )
+
+
+class MismatchError(FingerprintError):
+    """The recomputed content fingerprint differs from the stamped one."""
+
+    def __init__(
+        self,
+        expected: str,
+        actual: str,
+        field_digests: dict[str, str],
+    ) -> None:
+        self.expected = expected
+        self.actual = actual
+        self.field_digests = dict(field_digests)
+        super().__init__(
+            f"model content fingerprint mismatch: stamped {expected} but "
+            f"payload hashes to {actual}. Diff hint — per-field digests of "
+            f"this payload's PREDICTIVE content: {self.field_digests}; "
+            "recompute predictive_field_digests() on the stamping side and "
+            "compare to localize the divergent field(s)."
+        )
+
+
+def _canonical(value: Any, key_path: str) -> Any:
+    """Return a pure-JSON structure with the design §2b guarantees.
+
+    * Exact float canonicalization (``repr``-based shortest round-trip via
+      the ``json`` encoder) — no lossy rounding.
+    * Non-finite floats rejected (:class:`NonFiniteValueError`).
+    * numpy scalars/arrays accepted via duck-typed ``tolist()`` so the
+      same IEEE-754 values hash identically whether produced by numpy or
+      plain Python.
+    * Anything unrepresentable is a hard error — never ``default=str``
+      (the old impls' lossy, silent fallback).
+    """
+    if value is None or isinstance(value, (str, bool, int)):
+        return value
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise NonFiniteValueError(key_path, value)
+        return value
+    if isinstance(value, dict):
+        out = {}
+        for k, v in value.items():
+            if not isinstance(k, str):
+                raise FingerprintError(
+                    f"non-string dict key {k!r} at {key_path!r}: canonical "
+                    "JSON serialization requires string keys"
+                )
+            out[k] = _canonical(v, f"{key_path}.{k}")
+        return out
+    if isinstance(value, (list, tuple)):
+        return [
+            _canonical(v, f"{key_path}[{i}]") for i, v in enumerate(value)
+        ]
+    tolist = getattr(value, "tolist", None)
+    if callable(tolist):  # numpy scalars and arrays, without importing numpy
+        return _canonical(tolist(), key_path)
+    raise FingerprintError(
+        f"unsupported type {type(value).__name__!r} at {key_path!r}: "
+        "refusing lossy default=str serialization; convert to plain "
+        "JSON-compatible types before stamping"
+    )
+
+
+def _classified_predictive_content(payload: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise FingerprintError(
+            f"payload must be a dict, got {type(payload).__name__!r}"
+        )
+    unclassified = [
+        k for k in payload
+        if k not in PREDICTIVE_KEYS and k not in OPERATIONAL_KEYS
+    ]
+    if unclassified:
+        raise UnclassifiedKeyError(unclassified)
+    content = {k: payload[k] for k in payload if k in PREDICTIVE_KEYS}
+    if not content:
+        raise NoPredictiveContentError(
+            "payload has no recognizable scorer prediction content: no "
+            "PREDICTIVE-classified field present"
+        )
+    return content
+
+
+def _digest(canonical_value: Any) -> str:
+    blob = json.dumps(
+        canonical_value,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
     return "sha256:" + hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
 
-def model_content_sha256_from_path(path: str | Path) -> str:
-    """Return model-content hash for JSON artifacts, full hash otherwise."""
-    p = Path(path)
-    try:
-        payload = json.loads(p.read_text())
-    except Exception:
-        return artifact_sha256(p)
-    if not isinstance(payload, dict):
-        return artifact_sha256(p)
-    try:
-        return model_content_sha256(payload)
-    except ValueError:
-        return artifact_sha256(p)
+def model_content_sha256(payload: dict[str, Any]) -> str:
+    """Stable scorer identity over the PREDICTIVE-classified content.
+
+    Hashes the canonical JSON (sorted keys, exact float representation) of
+    the PREDICTIVE subset of ``payload``. Every payload key must be
+    classified; see :class:`UnclassifiedKeyError`.
+
+    Both the fit-time (calibrator training) side and the runtime
+    (scorer-binding check) side MUST call this same function — importing
+    it from renquant-common is what makes the two sides structurally
+    guaranteed to agree.
+    """
+    content = _classified_predictive_content(payload)
+    canonical = {k: _canonical(v, k) for k, v in content.items()}
+    return _digest(canonical)
 
 
-def stamp_artifact_metadata(
-    metadata: dict | None,
-    path: str | Path,
-    payload: dict[str, Any] | None = None,
-) -> dict:
-    """Return metadata with path + fingerprint fields for runtime contracts."""
-    meta = dict(metadata or {})
-    nested = meta.get("metadata")
-    if isinstance(nested, dict):
-        for key, value in nested.items():
-            meta.setdefault(key, value)
-    sha = artifact_sha256(path)
-    try:
-        content_sha = (
-            model_content_sha256(payload)
-            if isinstance(payload, dict)
-            else model_content_sha256_from_path(path)
+def predictive_field_digests(payload: dict[str, Any]) -> dict[str, str]:
+    """Per-field digests of the PREDICTIVE content, for mismatch triage.
+
+    Comparing the stamping side's and the verifying side's per-field
+    digests localizes exactly which field diverged (stage-2 triage
+    tooling, design §2c).
+    """
+    content = _classified_predictive_content(payload)
+    return {k: _digest(_canonical(v, k)) for k, v in content.items()}
+
+
+def stamp(payload: dict[str, Any]) -> dict[str, Any]:
+    """Return the stamp fields to persist alongside the artifact payload.
+
+    ``fingerprint_schema_version`` travels WITH the hash so a verifier can
+    distinguish "different content" from "different contract"
+    (:class:`VersionGapError` vs :class:`MismatchError`).
+    """
+    return {
+        "model_content_fingerprint": model_content_sha256(payload),
+        "fingerprint_schema_version": FINGERPRINT_SCHEMA_VERSION,
+    }
+
+
+def verify(
+    payload: dict[str, Any],
+    expected: str,
+    expected_version: int,
+) -> None:
+    """Check ``payload`` against a stamped fingerprint; raise on failure.
+
+    :param payload: the artifact payload under verification.
+    :param expected: the stamped ``model_content_fingerprint``.
+    :param expected_version: the stamped ``fingerprint_schema_version``.
+        MANDATORY — a caller must extract this from the artifact's own
+        stamp (see :func:`stamp`) and pass it explicitly. There is no
+        optional/omitted form: an omitted or malformed version is exactly
+        the "one forgotten argument bypasses the whole migration contract"
+        hole this function must never reopen. A gap against
+        :data:`FINGERPRINT_SCHEMA_VERSION` raises :class:`VersionGapError`
+        BEFORE any content comparison — a version gap is not evidence
+        about content. Verifying an artifact with NO stamped version at
+        all (a pre-schema-v1 artifact) is out of scope for this function;
+        use an explicitly named legacy path if that migration case is
+        needed — never silently accept a versionless stamp here.
+    :raises VersionGapError: schema-version gap, or a malformed
+        (non-integer, or bool masquerading as int) version value
+        (re-stamp, auditable).
+    :raises MismatchError: content fingerprint differs (with per-field
+        diff hint).
+    :raises UnclassifiedKeyError: the payload contains a key the current
+        tables do not classify — fails closed, never ignored (design §2b
+        verify-time rule).
+    """
+    if not isinstance(expected_version, int) or isinstance(expected_version, bool):
+        # Reject non-integer versions (including the classic Python trap
+        # where 1.0 == 1 and True == 1 would otherwise silently coerce
+        # through an equality check) rather than let a malformed stamp
+        # value pass or fail unpredictably.
+        raise VersionGapError(expected_version, FINGERPRINT_SCHEMA_VERSION)
+    if expected_version != FINGERPRINT_SCHEMA_VERSION:
+        raise VersionGapError(expected_version, FINGERPRINT_SCHEMA_VERSION)
+    actual = model_content_sha256(payload)
+    if actual != expected:
+        raise MismatchError(
+            expected, actual, predictive_field_digests(payload)
         )
-    except ValueError:
-        content_sha = sha
-    meta.setdefault("artifact_path", str(Path(path)))
-    meta.setdefault("artifact_sha256", sha)
-    meta.setdefault("artifact_fingerprint", sha)
-    meta.setdefault("model_content_fingerprint", content_sha)
-    return meta
+
+
+def artifact_sha256(path: str | Path) -> str:
+    """Full-file artifact hash for tamper/audit checks.
+
+    Do not use this as the scorer/calibrator pairing identity: acceptance
+    tools append mutable metadata such as ``wf_gate_metadata`` after
+    training, which changes the file bytes without changing the model.
+    """
+    return "sha256:" + hashlib.sha256(Path(path).read_bytes()).hexdigest()

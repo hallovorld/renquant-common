@@ -48,6 +48,35 @@ def test_version_matches_snapshot(snapshot: dict) -> None:
     )
 
 
+def test_pyproject_version_matches_installed_and_snapshot(snapshot: dict) -> None:
+    """A third, independent source: pyproject.toml's own declared version.
+
+    test_version_matches_snapshot only compares the INSTALLED package's
+    metadata against the snapshot — it says nothing about whether the
+    installed metadata was actually built from the CURRENT source tree's
+    pyproject.toml (an editable install's version metadata is a
+    point-in-time snapshot from install time, not recomputed live).
+    Checking pyproject.toml directly closes that gap: all three of
+    (pyproject.toml, installed metadata, api_snapshot) must agree for a
+    0.9.0-style version bump to be genuinely atomic."""
+    try:
+        import tomllib
+    except ModuleNotFoundError:  # pragma: no cover - py<3.11 fallback
+        import tomli as tomllib  # type: ignore[no-redef]
+
+    pyproject_path = Path(__file__).parent.parent / "pyproject.toml"
+    declared_in_pyproject = tomllib.loads(pyproject_path.read_text())["project"]["version"]
+    installed = metadata.version("renquant-common")
+    assert declared_in_pyproject == installed == snapshot["version"], (
+        "pyproject.toml version, installed package metadata, and "
+        "tests/api_snapshot/public_api.json must all agree "
+        f"(pyproject={declared_in_pyproject!r}, installed={installed!r}, "
+        f"snapshot={snapshot['version']!r}). If they disagree, the installed "
+        "package is stale relative to the source tree — reinstall "
+        "(pip install -e .) rather than editing any single source alone."
+    )
+
+
 def test_public_names_match_snapshot(snapshot: dict) -> None:
     actual = sorted(common.__all__)
     expected = sorted(snapshot["public_names"])
