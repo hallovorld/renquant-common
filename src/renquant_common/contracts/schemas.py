@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import Enum
-from typing import Literal
+from typing import Literal, Optional
 from urllib.parse import urlparse
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -61,7 +61,7 @@ class ArtifactManifest(BaseModel):
     trained_at: datetime
     lookahead_days: int = Field(ge=1)
     oos_evidence: OOSEvidence
-    calibrator_uri: str | None = None
+    calibrator_uri: Optional[str] = None
     owner_repo: str
 
 
@@ -98,7 +98,7 @@ class VerifiedArtifact(BaseModel):
     verified_at: datetime
     checks: tuple[str, ...] = Field(min_length=1)
     leakage_safe: bool = True
-    evidence_uri: str | None = None
+    evidence_uri: Optional[str] = None
 
     @model_validator(mode="after")
     def _validate_manifest_contract(self) -> "VerifiedArtifact":
@@ -165,8 +165,8 @@ class DecisionTraceRow(BaseModel):
     bar_ts: datetime
     ticker: str
     regime: RegimeLabel
-    raw_score: float | None = None
-    calibrated_score: float | None = None
+    raw_score: Optional[float] = None
+    calibrated_score: Optional[float] = None
     decision: str  # "buy" | "sell" | "hold" | "reject" | "skip"
     gate_history: tuple[str, ...] = ()
     artifact_fingerprint: str
