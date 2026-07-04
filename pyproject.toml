@@ -17,7 +17,7 @@ dependencies = [
   # session calendar every repo imports instead of hand-copying. The import
   # inside the module stays lazy and raises CalendarUnavailableError
   # (fail-closed) when absent, but it is a real dependency of the public API.
-  "pandas_market_calendars>=4",
+  "pandas_market_calendars>=4,<5",
   # Public API includes ``hmm_regime_labels.compute_hmm_regime_labels()`` which
   # reads parquet via ``pd.read_parquet``. pandas does not bundle an engine,
   # so we list one explicitly — otherwise consumers + CI fail with
