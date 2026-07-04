@@ -228,6 +228,31 @@ OPERATIONAL_KEYS = frozenset({
     "artifact_fingerprint",
     "model_content_fingerprint",
     "fingerprint_schema_version",
+    # M6 stage-2 migration stamp fields (0.9.2, per renquant-orchestrator
+    # doc/design/2026-07-03-m6-stage2-fingerprint-migration.md §3 step 1):
+    # the step-2 v1 re-stamp run writes these at the payload top level —
+    # the prior legacy (0.8.1) hash preserved as audit/rollback metadata
+    # (never read by any verifier) plus the re-stamp run's provenance
+    # record. Without classifying them, the first v1 ``stamp()`` of a
+    # dual-stamped artifact raises :class:`UnclassifiedKeyError` on the
+    # very fields the migration added.
+    #
+    # NOTE on FINGERPRINT_SCHEMA_VERSION (stage-1 design §2b "a bump is
+    # required whenever a classification table changes"): this table
+    # change is HASH-PRESERVING by construction, so the schema version
+    # stays 1 — these keys previously hard-errored at stamp AND verify
+    # time (no artifact carrying them was ever stampable under v1), and
+    # classifying them OPERATIONAL excludes them from the hash, so every
+    # payload that hashes under both 0.9.1 and 0.9.2 hashes IDENTICALLY.
+    # The stage-2 design depends on this: its step 2 stamps
+    # ``fingerprint_schema_version: 1`` using exactly these tables. A
+    # bump remains required for any change that can alter an existing
+    # artifact's v1 hash (adding/moving PREDICTIVE keys). The legacy
+    # 0.8.1 shim tables below are NOT touched: they are frozen verbatim,
+    # and the step-2 audit check recomputes the legacy hash over the
+    # payload MINUS the migration-added top-level fields.
+    "model_content_fingerprint_legacy_081",
+    "restamp_provenance",
     "model_fingerprint",
     "fingerprint",
     "config_fingerprint",
