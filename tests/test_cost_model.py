@@ -11,6 +11,8 @@ import pytest
 from renquant_common.cost_model import (
     CostModelSpec,
     apply_costs_to_period_returns,
+    cost_model_content_sha256,
+    cost_model_spec_from_dict,
     per_side_cost_bps,
     realized_traded_fraction,
     rebalance_cost_fraction,
@@ -127,6 +129,44 @@ class TestApplyCosts:
     def test_gross_equals_net_when_costless(self) -> None:
         gross = [0.01, 0.02, -0.03]
         assert apply_costs_to_period_returns(gross, [1.0, 1.0, 1.0], CostModelSpec()) == gross
+
+
+class TestFingerprint:
+    """Codex review (D-C8a round-1): 'sharing formulas is insufficient if WF
+    evaluation and runtime can silently use different fee, spread, slippage
+    or rounding values' — a stable to_dict/sha256 identity so the two sides
+    can PROVE they used the same numbers, not just the same code path."""
+
+    def test_round_trip_through_dict(self) -> None:
+        spec = CostModelSpec(fee_bps=25.0, spread_bps=10.0, slippage_bps=5.0,
+                              increment_rounding_bps=2.0)
+        restored = cost_model_spec_from_dict(spec.to_dict())
+        assert restored == spec
+        assert cost_model_content_sha256(restored) == cost_model_content_sha256(spec)
+
+    def test_missing_dict_keys_default_like_the_constructor(self) -> None:
+        assert cost_model_spec_from_dict({"fee_bps": 25.0}) == CostModelSpec(fee_bps=25.0)
+
+    def test_different_params_produce_different_fingerprint(self) -> None:
+        a = CostModelSpec(fee_bps=25.0)
+        b = CostModelSpec(fee_bps=25.001)
+        assert cost_model_content_sha256(a) != cost_model_content_sha256(b)
+
+    def test_identical_params_produce_identical_fingerprint(self) -> None:
+        a = CostModelSpec(fee_bps=25.0, spread_bps=10.0)
+        b = CostModelSpec(fee_bps=25.0, spread_bps=10.0)
+        assert cost_model_content_sha256(a) == cost_model_content_sha256(b)
+
+    def test_fingerprint_is_stable_sha256_format(self) -> None:
+        fp = cost_model_content_sha256(CostModelSpec(fee_bps=25.0))
+        assert fp.startswith("sha256:")
+        assert len(fp) == len("sha256:") + 64
+
+    def test_to_dict_has_every_field_explicit(self) -> None:
+        assert CostModelSpec(fee_bps=25.0).to_dict() == {
+            "fee_bps": 25.0, "spread_bps": 0.0, "slippage_bps": 0.0,
+            "increment_rounding_bps": 0.0,
+        }
 
 
 def test_asset_agnostic_no_crypto_symbols() -> None:

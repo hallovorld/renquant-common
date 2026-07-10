@@ -44,14 +44,19 @@ deterministic, so replay and runtime cannot diverge on environment.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import math
 from dataclasses import dataclass
 from typing import Iterable, Mapping, Sequence
 
 __all__ = [
+    "COST_MODEL_FINGERPRINT_SCHEMA_VERSION",
     "CostModelSpec",
     "TurnoverBreakdown",
     "apply_costs_to_period_returns",
+    "cost_model_content_sha256",
+    "cost_model_spec_from_dict",
     "per_side_cost_bps",
     "realized_traded_fraction",
     "rebalance_cost_fraction",
@@ -60,6 +65,12 @@ __all__ = [
 ]
 
 _BPS = 1e4
+
+#: Travels WITH a stamped fingerprint so a verifier can distinguish "different
+#: cost parameters" from "different contract" (same convention as
+#: model_fingerprint.FINGERPRINT_SCHEMA_VERSION — the M6 pattern this module's
+#: docstring cites).
+COST_MODEL_FINGERPRINT_SCHEMA_VERSION = 1
 
 
 def _require_finite_nonneg(name: str, value: float) -> float:
@@ -93,6 +104,47 @@ class CostModelSpec:
     def __post_init__(self) -> None:
         for name in ("fee_bps", "spread_bps", "slippage_bps", "increment_rounding_bps"):
             object.__setattr__(self, name, _require_finite_nonneg(name, getattr(self, name)))
+
+    def to_dict(self) -> dict[str, float]:
+        """Canonical serialization — the ONE dict form fingerprinting,
+        persistence, and evidence/run-bundle stamping all use. Every field
+        is explicit (no implicit defaults hidden from a serialized form)."""
+        return {
+            "fee_bps": self.fee_bps,
+            "spread_bps": self.spread_bps,
+            "slippage_bps": self.slippage_bps,
+            "increment_rounding_bps": self.increment_rounding_bps,
+        }
+
+
+def cost_model_spec_from_dict(payload: Mapping[str, float]) -> CostModelSpec:
+    """Inverse of :meth:`CostModelSpec.to_dict` — round-trips exactly.
+
+    Missing keys default the same way the constructor does (0.0), so a
+    persisted fee-only spec deserializes identically to how it was built."""
+    return CostModelSpec(
+        fee_bps=payload.get("fee_bps", 0.0),
+        spread_bps=payload.get("spread_bps", 0.0),
+        slippage_bps=payload.get("slippage_bps", 0.0),
+        increment_rounding_bps=payload.get("increment_rounding_bps", 0.0),
+    )
+
+
+def cost_model_content_sha256(spec: CostModelSpec) -> str:
+    """Stable content identity for ONE :class:`CostModelSpec` (Codex review,
+    D-C8a round-1 — the M6 fingerprint-unification pattern applied to cost
+    parameters): WF-gate replay evaluation and live runtime accounting must
+    both stamp/verify this SAME hash of the SAME fee/spread/slippage/
+    rounding values they actually used, so a silent drift between the two
+    sides — sharing formulas is not enough if the NUMBERS can differ — is
+    structurally impossible to miss. Canonical JSON: sorted keys, compact
+    separators, NaN/Inf rejected (``CostModelSpec`` itself already requires
+    every field finite, so this can only ever reject a construction bug,
+    never silently hash a NaN as if it were a real value)."""
+    blob = json.dumps(
+        spec.to_dict(), sort_keys=True, separators=(",", ":"), allow_nan=False
+    )
+    return "sha256:" + hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
 
 def per_side_cost_bps(spec: CostModelSpec) -> float:
