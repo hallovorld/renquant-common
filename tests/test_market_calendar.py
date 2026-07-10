@@ -272,3 +272,99 @@ def test_session_bounds_dataclass_frozen() -> None:
     )
     with pytest.raises(Exception):
         b.open = b.close  # type: ignore[misc]
+
+
+# ---------------------------------------------------------------------------
+# ALWAYS_OPEN mode (crypto RFC 2026-07-10, M2/P1) — sessions = UTC days
+# ---------------------------------------------------------------------------
+class TestAlwaysOpenMode:
+    def test_every_day_is_a_session_including_weekend_and_holiday(self) -> None:
+        from renquant_common.market_calendar import AlwaysOpenSessionCalendar
+
+        cal = AlwaysOpenSessionCalendar()
+        # Sunday, Christmas, and a regular Tuesday all have sessions.
+        for day in (dt.date(2026, 7, 5), dt.date(2025, 12, 25), dt.date(2026, 6, 30)):
+            assert is_session(day, calendar=cal)
+
+    def test_session_bounds_are_utc_calendar_day(self) -> None:
+        from renquant_common.market_calendar import AlwaysOpenSessionCalendar
+
+        b = AlwaysOpenSessionCalendar().session_bounds(dt.date(2026, 7, 5))
+        assert b is not None
+        assert b.open == dt.datetime(2026, 7, 5, tzinfo=dt.timezone.utc)
+        assert b.close == dt.datetime(2026, 7, 6, tzinfo=dt.timezone.utc)
+        assert b.contains(dt.datetime(2026, 7, 5, 23, 59, tzinfo=dt.timezone.utc))
+        assert not b.contains(dt.datetime(2026, 7, 6, 0, 0, tzinfo=dt.timezone.utc))
+
+    def test_previous_session_is_prior_calendar_day(self) -> None:
+        # Monday's previous session is SUNDAY, not Friday.
+        assert previous_session(
+            dt.date(2026, 7, 6), calendar_name="ALWAYS_OPEN"
+        ) == dt.date(2026, 7, 5)
+
+    def test_last_completed_session_is_yesterday_utc(self) -> None:
+        # Mid-day UTC Sunday → Saturday's UTC bar is the last completed one.
+        now = pd.Timestamp("2026-07-05 14:00:00", tz="UTC")
+        assert last_completed_session(
+            now, calendar_name="ALWAYS_OPEN"
+        ) == dt.date(2026, 7, 4)
+
+    def test_last_completed_session_at_exact_midnight_counts_just_ended_day(self) -> None:
+        now = pd.Timestamp("2026-07-06 00:00:00", tz="UTC")
+        assert last_completed_session(
+            now, calendar_name="ALWAYS_OPEN"
+        ) == dt.date(2026, 7, 5)
+
+    def test_last_completed_session_naive_now_is_utc(self) -> None:
+        # 2026-07-05 01:00 naive == 01:00 UTC (NOT ET) → last completed 07-04.
+        assert last_completed_session(
+            pd.Timestamp("2026-07-05 01:00:00"), calendar_name="ALWAYS_OPEN"
+        ) == dt.date(2026, 7, 4)
+
+    def test_sessions_between_covers_every_calendar_day(self) -> None:
+        days = sessions_between(
+            "2026-07-03", "2026-07-06", calendar_name="ALWAYS_OPEN"
+        )
+        assert list(days) == list(pd.to_datetime(
+            ["2026-07-03", "2026-07-04", "2026-07-05", "2026-07-06"]
+        ))
+
+    def test_session_key_is_identity_on_any_day(self) -> None:
+        # Weekend day maps to itself (NYSE mode would roll back to Friday).
+        assert session_key(
+            dt.date(2026, 7, 5), calendar_name="ALWAYS_OPEN"
+        ) == dt.date(2026, 7, 5)
+
+    def test_session_keys_vectorized_identity(self) -> None:
+        out = session_keys(
+            ["2026-07-04", "2026-07-05"], calendar_name="ALWAYS_OPEN"
+        )
+        assert list(out) == list(pd.to_datetime(["2026-07-04", "2026-07-05"]))
+
+    def test_mode_works_without_pandas_market_calendars(self, monkeypatch) -> None:
+        # The always-open branch must not touch the mcal backend at all.
+        import renquant_common.market_calendar as mc
+
+        monkeypatch.setitem(sys.modules, "pandas_market_calendars", None)
+        _calendar.cache_clear()
+        try:
+            assert previous_session(
+                dt.date(2026, 7, 6), calendar_name="ALWAYS_OPEN"
+            ) == dt.date(2026, 7, 5)
+            assert last_completed_session(
+                pd.Timestamp("2026-07-05 14:00:00", tz="UTC"),
+                calendar_name="ALWAYS_OPEN",
+            ) == dt.date(2026, 7, 4)
+            assert len(sessions_between(
+                "2026-07-03", "2026-07-05", calendar_name="ALWAYS_OPEN"
+            )) == 3
+            # NYSE mode must still fail closed with the backend gone.
+            with pytest.raises(CalendarUnavailableError):
+                mc.sessions_between("2026-07-01", "2026-07-06")
+        finally:
+            _calendar.cache_clear()
+
+    def test_nyse_default_unaffected_by_always_open_addition(self) -> None:
+        # Equity byte-identity pin: default calendar_name still rolls a
+        # Sunday back to Friday and skips July-4 observance.
+        assert previous_session(dt.date(2026, 7, 6)) == dt.date(2026, 7, 2)

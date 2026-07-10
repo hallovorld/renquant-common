@@ -38,6 +38,8 @@ from .purged_cv import (
 )
 from .hurst import compute_hurst, rolling_hurst
 from .market_calendar import (
+    ALWAYS_OPEN_CALENDAR_NAME,
+    AlwaysOpenSessionCalendar,
     CalendarUnavailableError,
     NyseSessionCalendar,
     SessionBounds,
@@ -61,8 +63,10 @@ from .regime_labels import (
 from .training_runs import record_training_run
 
 __all__ = [
+    "ALWAYS_OPEN_CALENDAR_NAME",
     "AcceptanceReport",
     "ArtifactManifest",
+    "AlwaysOpenSessionCalendar",
     "CalendarUnavailableError",
     "CombinatorialPurgedCV",
     "DecisionTraceRow",
