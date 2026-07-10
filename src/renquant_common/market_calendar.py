@@ -110,9 +110,27 @@ def _as_date(day: "dt.date | dt.datetime | str | pd.Timestamp") -> dt.date:
     raise TypeError(f"cannot interpret {day!r} as a date")
 
 
-def _as_aware(moment: dt.datetime) -> dt.datetime:
-    """Treat a naive datetime as ET; leave an aware one alone."""
-    return moment if moment.tzinfo is not None else moment.replace(tzinfo=ET)
+def _as_utc_date(
+    moment: "dt.date | dt.datetime | str | pd.Timestamp",
+) -> dt.date:
+    """Coerce a date-like to its UTC calendar date — ALWAYS_OPEN mode's date
+    convention (round-1 fix; Codex review of #27). A naive datetime/Timestamp
+    is treated as ALREADY UTC (this mode's naive convention, same as
+    :func:`last_completed_session`'s ALWAYS_OPEN branch); an AWARE one is
+    converted to UTC first, THEN its date taken — ``_as_date``'s plain
+    ``.date()`` returns the date in the moment's OWN attached tz, which is
+    wrong here (e.g. naive-vs-UTC-intended ``23:00`` or an aware non-UTC
+    offset near midnight can land on the wrong UTC calendar day)."""
+    if isinstance(moment, dt.datetime):
+        return (moment if moment.tzinfo is None else moment.astimezone(UTC)).date()
+    if isinstance(moment, dt.date):
+        return moment
+    if isinstance(moment, str):
+        return dt.date.fromisoformat(moment)
+    to_pydatetime = getattr(moment, "to_pydatetime", None)
+    if callable(to_pydatetime):
+        return _as_utc_date(to_pydatetime())
+    raise TypeError(f"cannot interpret {moment!r} as a date")
 
 
 def _pandas_ts_to_et(ts: Any) -> dt.datetime:
@@ -139,9 +157,14 @@ class SessionBounds:
     close: dt.datetime
 
     def contains(self, moment: dt.datetime) -> bool:
-        """True when ``moment`` (aware; naive treated as ET) is within
-        [open, close)."""
-        m = _as_aware(moment)
+        """True when ``moment`` is within [open, close). A naive ``moment``
+        is interpreted in THIS session's own naive convention — the same
+        tzinfo as ``open``/``close`` themselves (ET for NYSE-mode bounds,
+        UTC for ALWAYS_OPEN-mode bounds), rather than a hardcoded ET
+        assumption (round-1 fix; Codex review of #27 — a hardcoded
+        naive-as-ET reading misclassified naive UTC-intended instants near
+        session boundaries in ALWAYS_OPEN mode)."""
+        m = moment if moment.tzinfo is not None else moment.replace(tzinfo=self.open.tzinfo)
         return self.open <= m < self.close
 
 
@@ -229,7 +252,8 @@ def session_bounds(
     ``day`` is not a session (weekend/holiday). Raises
     :class:`CalendarUnavailableError` when the backend is missing."""
     cal = calendar or default_session_calendar()
-    return cal.session_bounds(_as_date(day))
+    d = _as_utc_date(day) if getattr(cal, "name", None) == ALWAYS_OPEN_CALENDAR_NAME else _as_date(day)
+    return cal.session_bounds(d)
 
 
 def is_session(
@@ -252,9 +276,9 @@ def previous_session(
     half-day aware). Raises :class:`ValueError` when no session exists in the
     ``lookback_days`` window (fail-closed). In ALWAYS_OPEN mode every day is
     a session, so this is simply ``day - 1``."""
-    d = _as_date(day)
     if _is_always_open(calendar_name):
-        return d - dt.timedelta(days=1)
+        return _as_utc_date(day) - dt.timedelta(days=1)
+    d = _as_date(day)
     days = sessions_between(
         d - dt.timedelta(days=lookback_days),
         d - dt.timedelta(days=1),
@@ -278,7 +302,11 @@ def previous_session_from_calendar(
     :class:`SessionCalendar` (day-walk — used where tests inject deterministic
     fakes). Raises :class:`ValueError` when no session exists within
     ``max_lookback_days`` (fail-closed)."""
-    start = _as_date(day)
+    start = (
+        _as_utc_date(day)
+        if getattr(calendar, "name", None) == ALWAYS_OPEN_CALENDAR_NAME
+        else _as_date(day)
+    )
     probe = start
     for _ in range(max_lookback_days):
         probe = probe - dt.timedelta(days=1)
@@ -355,11 +383,14 @@ def sessions_between(
     backend is missing. ALWAYS_OPEN mode: every calendar day in the range."""
     import pandas as pd  # noqa: PLC0415
 
+    if _is_always_open(calendar_name):
+        s, e = _as_utc_date(start), _as_utc_date(end)
+        if s > e:
+            return pd.DatetimeIndex([])
+        return pd.date_range(s, e, freq="D").normalize()
     s, e = _as_date(start), _as_date(end)
     if s > e:
         return pd.DatetimeIndex([])
-    if _is_always_open(calendar_name):
-        return pd.date_range(s, e, freq="D").normalize()
     cal = _calendar(calendar_name)
     days = pd.DatetimeIndex(cal.valid_days(start_date=s.isoformat(), end_date=e.isoformat()))
     if days.tz is not None:
@@ -383,7 +414,7 @@ def session_key(
     the window (fail-closed — widen the window)."""
     import pandas as pd  # noqa: PLC0415
 
-    d = _as_date(day)
+    d = _as_utc_date(day) if _is_always_open(calendar_name) else _as_date(day)
     ts = pd.Timestamp(d)
     if sessions is None:
         sessions = sessions_between(
@@ -412,7 +443,15 @@ def session_keys(
     (fail-closed)."""
     import pandas as pd  # noqa: PLC0415
 
-    d = pd.to_datetime(pd.Series(dates)).dt.normalize()
+    if _is_always_open(calendar_name):
+        # ALWAYS_OPEN's naive-as-UTC convention, vectorized: utc=True treats
+        # naive inputs as already UTC and converts aware (any-offset) inputs
+        # to UTC — a plain .dt.normalize() (no conversion) would keep an
+        # aware offset's LOCAL date, misclassifying instants near UTC
+        # midnight (round-1 fix; Codex review of #27).
+        d = pd.to_datetime(pd.Series(dates), utc=True).dt.tz_localize(None).dt.normalize()
+    else:
+        d = pd.to_datetime(pd.Series(dates)).dt.normalize()
     if d.empty:
         return pd.Series([], dtype="datetime64[ns]")
     if sessions is None:

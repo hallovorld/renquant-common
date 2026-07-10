@@ -368,3 +368,75 @@ class TestAlwaysOpenMode:
         # Equity byte-identity pin: default calendar_name still rolls a
         # Sunday back to Friday and skips July-4 observance.
         assert previous_session(dt.date(2026, 7, 6)) == dt.date(2026, 7, 2)
+
+    # -- round-1 fix (Codex review of #27): UTC semantics, not local/ET --
+
+    def test_contains_naive_moment_is_utc_not_et(self) -> None:
+        from renquant_common.market_calendar import AlwaysOpenSessionCalendar
+
+        b = AlwaysOpenSessionCalendar().session_bounds(dt.date(2026, 7, 10))
+        # Naive 23:00 is INSIDE the July-10 UTC session (23:00 UTC). A
+        # hardcoded naive-as-ET reading would treat this as 23:00 EDT ==
+        # 2026-07-11 03:00 UTC, landing OUTSIDE [D 00:00, D+1 00:00) UTC.
+        assert b.contains(dt.datetime(2026, 7, 10, 23, 0))
+        assert not b.contains(dt.datetime(2026, 7, 11, 0, 0))
+
+    def test_contains_aware_offset_crossing_utc_midnight(self) -> None:
+        from renquant_common.market_calendar import AlwaysOpenSessionCalendar
+
+        b = AlwaysOpenSessionCalendar().session_bounds(dt.date(2026, 7, 10))
+        # 2026-07-10 23:00 EDT (-04:00) == 2026-07-11 03:00 UTC — outside
+        # July 10's UTC session, inside July 11's.
+        et_late = dt.datetime(2026, 7, 10, 23, 0, tzinfo=dt.timezone(dt.timedelta(hours=-4)))
+        assert not b.contains(et_late)
+        b_next = AlwaysOpenSessionCalendar().session_bounds(dt.date(2026, 7, 11))
+        assert b_next.contains(et_late)
+
+    def test_nyse_contains_naive_moment_still_et(self) -> None:
+        # The fix must not regress NYSE-mode bounds' own naive convention.
+        b = SessionBounds(
+            open=dt.datetime(2026, 7, 10, 9, 30, tzinfo=ET),
+            close=dt.datetime(2026, 7, 10, 16, 0, tzinfo=ET),
+        )
+        assert b.contains(dt.datetime(2026, 7, 10, 12, 0))
+        assert not b.contains(dt.datetime(2026, 7, 10, 20, 0))
+
+    def test_previous_session_aware_offset_crossing_utc_midnight(self) -> None:
+        # 2026-07-10 23:00 EDT == 2026-07-11 03:00 UTC -> UTC day is the
+        # 11th, so the previous UTC session is the 10th, not the 9th (which
+        # a local-date .date() on the ET-aware input would wrongly give).
+        et_late = dt.datetime(2026, 7, 10, 23, 0, tzinfo=dt.timezone(dt.timedelta(hours=-4)))
+        assert previous_session(
+            et_late, calendar_name="ALWAYS_OPEN"
+        ) == dt.date(2026, 7, 10)
+
+    def test_session_bounds_scalar_helper_aware_offset_crossing_utc_midnight(self) -> None:
+        from renquant_common.market_calendar import AlwaysOpenSessionCalendar
+
+        et_late = dt.datetime(2026, 7, 10, 23, 0, tzinfo=dt.timezone(dt.timedelta(hours=-4)))
+        b = session_bounds(et_late, calendar=AlwaysOpenSessionCalendar())
+        assert b.open == dt.datetime(2026, 7, 11, tzinfo=dt.timezone.utc)
+
+    def test_sessions_between_aware_offset_crossing_utc_midnight(self) -> None:
+        et_late = dt.datetime(2026, 7, 10, 23, 0, tzinfo=dt.timezone(dt.timedelta(hours=-4)))
+        days = sessions_between(et_late, et_late, calendar_name="ALWAYS_OPEN")
+        assert list(days) == [pd.Timestamp("2026-07-11")]
+
+    def test_session_key_aware_offset_crossing_utc_midnight(self) -> None:
+        et_late = dt.datetime(2026, 7, 10, 23, 0, tzinfo=dt.timezone(dt.timedelta(hours=-4)))
+        assert session_key(
+            et_late, calendar_name="ALWAYS_OPEN"
+        ) == dt.date(2026, 7, 11)
+
+    def test_session_keys_vectorized_aware_offset_crossing_utc_midnight(self) -> None:
+        et_late = dt.datetime(2026, 7, 10, 23, 0, tzinfo=dt.timezone(dt.timedelta(hours=-4)))
+        out = session_keys([et_late], calendar_name="ALWAYS_OPEN")
+        assert list(out) == [pd.Timestamp("2026-07-11")]
+
+    def test_previous_session_from_calendar_aware_offset_crossing_utc_midnight(self) -> None:
+        from renquant_common.market_calendar import AlwaysOpenSessionCalendar
+
+        et_late = dt.datetime(2026, 7, 10, 23, 0, tzinfo=dt.timezone(dt.timedelta(hours=-4)))
+        assert previous_session_from_calendar(
+            AlwaysOpenSessionCalendar(), et_late
+        ) == dt.date(2026, 7, 10)
