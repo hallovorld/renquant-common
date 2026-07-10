@@ -440,3 +440,48 @@ class TestAlwaysOpenMode:
         assert previous_session_from_calendar(
             AlwaysOpenSessionCalendar(), et_late
         ) == dt.date(2026, 7, 10)
+
+
+# ---------------------------------------------------------------------------
+# Round-1 fix, additive boundary battery (Codex review of #27 named these
+# exact instants; complements the round-1 tests above)
+# ---------------------------------------------------------------------------
+class TestAlwaysOpenUtcBoundaryBattery:
+    #: Codex's named straddle: 2026-07-10T20:30:00-04:00 == 00:30 UTC July 11.
+    STRADDLE = pd.Timestamp("2026-07-10T20:30:00-04:00")
+
+    def test_contains_naive_battery_near_utc_midnight(self) -> None:
+        from renquant_common.market_calendar import AlwaysOpenSessionCalendar
+
+        b = AlwaysOpenSessionCalendar().session_bounds(dt.date(2026, 7, 10))
+        assert b is not None
+        # Pre-fix ALL of these were read as ET and fell outside July 10's
+        # UTC session (20:00 EDT == 00:00 UTC July 11 — the exact boundary).
+        for hh, mm in ((20, 0), (21, 0), (22, 0), (23, 59)):
+            assert b.contains(dt.datetime(2026, 7, 10, hh, mm)), (hh, mm)
+        assert b.contains(dt.datetime(2026, 7, 10, 0, 0))       # inclusive open
+        assert not b.contains(dt.datetime(2026, 7, 11, 0, 0))   # exclusive close
+
+    def test_codex_named_straddle_maps_to_july_11_session(self) -> None:
+        # 00:30 UTC July 11 → session July 11; previous session July 10.
+        assert session_key(
+            self.STRADDLE, calendar_name="ALWAYS_OPEN"
+        ) == dt.date(2026, 7, 11)
+        assert previous_session(
+            self.STRADDLE, calendar_name="ALWAYS_OPEN"
+        ) == dt.date(2026, 7, 10)
+
+    def test_last_completed_session_aware_straddle(self) -> None:
+        # At 00:30 UTC July 11, July 10's session (closed 00:00 UTC) is the
+        # last COMPLETED one — already correct pre-fix; pinned so the
+        # date-coercion helpers can never diverge from it again.
+        assert last_completed_session(
+            self.STRADDLE, calendar_name="ALWAYS_OPEN"
+        ) == dt.date(2026, 7, 10)
+
+    def test_nyse_wall_date_coercion_pinned_unchanged(self) -> None:
+        # Equity byte-identity: NYSE-mode scalar helpers keep _as_date's
+        # wall-date reading — the same straddling instant has wall date
+        # July 10 (a Friday), whose previous NYSE session is Thursday
+        # July 9. The UTC normalization is ALWAYS_OPEN-only.
+        assert previous_session(self.STRADDLE) == dt.date(2026, 7, 9)
