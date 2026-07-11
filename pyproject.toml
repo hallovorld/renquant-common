@@ -4,7 +4,14 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "renquant-common"
-version = "0.11.0"
+# 0.12.0: adds ``renquant_common.pair_slug`` (crypto RFC D-C1, the other
+# half alongside #27's ALWAYS_OPEN calendar mode — the canonical
+# pair/slug symbol-normalization primitive renquant-base-data#41's local
+# stand-in exists to repoint onto). #28 (net-cost primitives) also claims
+# 0.12.0 concurrently; whichever of #28/this PR lands second rebases its
+# version above the other (same collision-handling convention #27/#28
+# already used).
+version = "0.12.0"
 description = "Shared RenQuant contracts and pipeline primitives."
 readme = "README.md"
 requires-python = ">=3.10"

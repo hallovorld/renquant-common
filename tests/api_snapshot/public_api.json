@@ -1,6 +1,6 @@
 {
   "renquant_common": {
-    "version": "0.11.0",
+    "version": "0.12.0",
     "public_names": [
       "ALWAYS_OPEN_CALENDAR_NAME",
       "AcceptanceReport",
