@@ -1,4 +1,4 @@
-"""Canonical NYSE market-session calendar — the ONE shared implementation.
+"""Canonical market-session calendar — the ONE shared implementation.
 
 Campaign B5 (orchestrator audit #296 §4.1 / finding XC-2): six independent
 "previous / last-completed NYSE session" implementations had accumulated
@@ -7,6 +7,19 @@ the umbrella scripts (plus two research-only variants), with real
 divergences — 16-day vs 14-day lookback windows, fail-closed raise vs
 swallow-to-``None``, and docstring-admitted hand-copies. This module is the
 single canonical implementation; every repo imports it.
+
+**ALWAYS_OPEN mode (crypto RFC 2026-07-10, gap M2 / pipeline P1).** A 24/7
+asset class (Alpaca spot crypto) has no exchange sessions: a "session" is one
+UTC calendar day, every day is a trading day, and day ``D``'s session
+completes at ``D+1 00:00:00 UTC``. Pass ``calendar_name="ALWAYS_OPEN"``
+(:data:`ALWAYS_OPEN_CALENDAR_NAME`) to the scalar/range helpers, or inject
+:class:`AlwaysOpenSessionCalendar` where a ``SessionCalendar`` is accepted.
+Convention: naive datetimes are interpreted as **UTC** in always-open mode
+(the NYSE mode keeps its naive-as-ET convention). The mode needs no
+``pandas_market_calendars`` backend, so it never raises
+:class:`CalendarUnavailableError`. This module is the canonical home of the
+mode — base-data, pipeline and orchestrator consume it rather than growing
+local always-open hacks.
 
 Backend: ``pandas_market_calendars`` — the same holiday / half-day dataset
 the whole stack already prices against. Holidays are skipped by the
@@ -52,6 +65,15 @@ UTC = dt.timezone.utc
 #: every historical hand-copy (14 / 16) — see module docstring.
 DEFAULT_LOOKBACK_DAYS = 30
 
+#: Sentinel calendar name selecting the 24/7 always-open session model
+#: (sessions = UTC calendar days). Accepted by every helper that takes a
+#: ``calendar_name``; never touches ``pandas_market_calendars``.
+ALWAYS_OPEN_CALENDAR_NAME = "ALWAYS_OPEN"
+
+
+def _is_always_open(calendar_name: str) -> bool:
+    return calendar_name.strip().upper() == ALWAYS_OPEN_CALENDAR_NAME
+
 
 class CalendarUnavailableError(RuntimeError):
     """The exchange-calendar backend (``pandas_market_calendars``) cannot be
@@ -88,9 +110,27 @@ def _as_date(day: "dt.date | dt.datetime | str | pd.Timestamp") -> dt.date:
     raise TypeError(f"cannot interpret {day!r} as a date")
 
 
-def _as_aware(moment: dt.datetime) -> dt.datetime:
-    """Treat a naive datetime as ET; leave an aware one alone."""
-    return moment if moment.tzinfo is not None else moment.replace(tzinfo=ET)
+def _as_utc_date(
+    moment: "dt.date | dt.datetime | str | pd.Timestamp",
+) -> dt.date:
+    """Coerce a date-like to its UTC calendar date — ALWAYS_OPEN mode's date
+    convention (round-1 fix; Codex review of #27). A naive datetime/Timestamp
+    is treated as ALREADY UTC (this mode's naive convention, same as
+    :func:`last_completed_session`'s ALWAYS_OPEN branch); an AWARE one is
+    converted to UTC first, THEN its date taken — ``_as_date``'s plain
+    ``.date()`` returns the date in the moment's OWN attached tz, which is
+    wrong here (e.g. naive-vs-UTC-intended ``23:00`` or an aware non-UTC
+    offset near midnight can land on the wrong UTC calendar day)."""
+    if isinstance(moment, dt.datetime):
+        return (moment if moment.tzinfo is None else moment.astimezone(UTC)).date()
+    if isinstance(moment, dt.date):
+        return moment
+    if isinstance(moment, str):
+        return dt.date.fromisoformat(moment)
+    to_pydatetime = getattr(moment, "to_pydatetime", None)
+    if callable(to_pydatetime):
+        return _as_utc_date(to_pydatetime())
+    raise TypeError(f"cannot interpret {moment!r} as a date")
 
 
 def _pandas_ts_to_et(ts: Any) -> dt.datetime:
@@ -117,9 +157,14 @@ class SessionBounds:
     close: dt.datetime
 
     def contains(self, moment: dt.datetime) -> bool:
-        """True when ``moment`` (aware; naive treated as ET) is within
-        [open, close)."""
-        m = _as_aware(moment)
+        """True when ``moment`` is within [open, close). A naive ``moment``
+        is interpreted in THIS session's own naive convention — the same
+        tzinfo as ``open``/``close`` themselves (ET for NYSE-mode bounds,
+        UTC for ALWAYS_OPEN-mode bounds), rather than a hardcoded ET
+        assumption (round-1 fix; Codex review of #27 — a hardcoded
+        naive-as-ET reading misclassified naive UTC-intended instants near
+        session boundaries in ALWAYS_OPEN mode)."""
+        m = moment if moment.tzinfo is not None else moment.replace(tzinfo=self.open.tzinfo)
         return self.open <= m < self.close
 
 
@@ -167,6 +212,22 @@ class NyseSessionCalendar:
         return bounds
 
 
+class AlwaysOpenSessionCalendar:
+    """24/7 session calendar: one session per UTC calendar day.
+
+    Session ``D`` spans ``[D 00:00:00 UTC, D+1 00:00:00 UTC)``; every day is
+    a session (no weekends, no holidays). ``SessionBounds`` datetimes are
+    UTC-aware (the ``SessionBounds`` contract requires aware datetimes; the
+    ET phrasing in its docstring is the NYSE-mode specialisation). No
+    ``pandas_market_calendars`` backend is required."""
+
+    name = ALWAYS_OPEN_CALENDAR_NAME
+
+    def session_bounds(self, day: dt.date) -> "SessionBounds | None":
+        open_ = dt.datetime(day.year, day.month, day.day, tzinfo=UTC)
+        return SessionBounds(open=open_, close=open_ + dt.timedelta(days=1))
+
+
 _DEFAULT_CALENDAR: "SessionCalendar | None" = None
 
 
@@ -191,7 +252,8 @@ def session_bounds(
     ``day`` is not a session (weekend/holiday). Raises
     :class:`CalendarUnavailableError` when the backend is missing."""
     cal = calendar or default_session_calendar()
-    return cal.session_bounds(_as_date(day))
+    d = _as_utc_date(day) if getattr(cal, "name", None) == ALWAYS_OPEN_CALENDAR_NAME else _as_date(day)
+    return cal.session_bounds(d)
 
 
 def is_session(
@@ -212,7 +274,10 @@ def previous_session(
 ) -> dt.date:
     """The most recent session STRICTLY before ``day`` (weekend / holiday /
     half-day aware). Raises :class:`ValueError` when no session exists in the
-    ``lookback_days`` window (fail-closed)."""
+    ``lookback_days`` window (fail-closed). In ALWAYS_OPEN mode every day is
+    a session, so this is simply ``day - 1``."""
+    if _is_always_open(calendar_name):
+        return _as_utc_date(day) - dt.timedelta(days=1)
     d = _as_date(day)
     days = sessions_between(
         d - dt.timedelta(days=lookback_days),
@@ -237,7 +302,11 @@ def previous_session_from_calendar(
     :class:`SessionCalendar` (day-walk — used where tests inject deterministic
     fakes). Raises :class:`ValueError` when no session exists within
     ``max_lookback_days`` (fail-closed)."""
-    start = _as_date(day)
+    start = (
+        _as_utc_date(day)
+        if getattr(calendar, "name", None) == ALWAYS_OPEN_CALENDAR_NAME
+        else _as_date(day)
+    )
     probe = start
     for _ in range(max_lookback_days):
         probe = probe - dt.timedelta(days=1)
@@ -261,8 +330,18 @@ def last_completed_session(
     ``now >= close`` — otherwise the prior session is returned. A naive
     ``now`` is treated as ET. Raises :class:`ValueError` when no completed
     session exists in the ``lookback_days`` window (fail-closed) and
-    :class:`CalendarUnavailableError` when the backend is missing."""
+    :class:`CalendarUnavailableError` when the backend is missing.
+
+    ALWAYS_OPEN mode: naive ``now`` is treated as **UTC**; session ``D``
+    completes at ``D+1 00:00:00 UTC``, so the last completed session is the
+    UTC calendar day BEFORE ``now``'s UTC date (at exactly midnight the just-
+    ended day counts, consistent with the NYSE ``now >= close`` rule)."""
     import pandas as pd  # noqa: PLC0415
+
+    if _is_always_open(calendar_name):
+        ts = pd.Timestamp.now(tz=UTC) if now is None else pd.Timestamp(now)
+        ts = ts.tz_localize(UTC) if ts.tzinfo is None else ts.tz_convert(UTC)
+        return ts.date() - dt.timedelta(days=1)
 
     ts = pd.Timestamp.now(tz=ET) if now is None else pd.Timestamp(now)
     if ts.tzinfo is None:
@@ -301,9 +380,14 @@ def sessions_between(
     """All sessions in ``[start, end]`` (both inclusive) as a tz-naive,
     normalized ``pd.DatetimeIndex``. Empty when ``start > end`` or the range
     holds no session. Raises :class:`CalendarUnavailableError` when the
-    backend is missing."""
+    backend is missing. ALWAYS_OPEN mode: every calendar day in the range."""
     import pandas as pd  # noqa: PLC0415
 
+    if _is_always_open(calendar_name):
+        s, e = _as_utc_date(start), _as_utc_date(end)
+        if s > e:
+            return pd.DatetimeIndex([])
+        return pd.date_range(s, e, freq="D").normalize()
     s, e = _as_date(start), _as_date(end)
     if s > e:
         return pd.DatetimeIndex([])
@@ -330,7 +414,7 @@ def session_key(
     the window (fail-closed — widen the window)."""
     import pandas as pd  # noqa: PLC0415
 
-    d = _as_date(day)
+    d = _as_utc_date(day) if _is_always_open(calendar_name) else _as_date(day)
     ts = pd.Timestamp(d)
     if sessions is None:
         sessions = sessions_between(
@@ -359,7 +443,15 @@ def session_keys(
     (fail-closed)."""
     import pandas as pd  # noqa: PLC0415
 
-    d = pd.to_datetime(pd.Series(dates)).dt.normalize()
+    if _is_always_open(calendar_name):
+        # ALWAYS_OPEN's naive-as-UTC convention, vectorized: utc=True treats
+        # naive inputs as already UTC and converts aware (any-offset) inputs
+        # to UTC — a plain .dt.normalize() (no conversion) would keep an
+        # aware offset's LOCAL date, misclassifying instants near UTC
+        # midnight (round-1 fix; Codex review of #27).
+        d = pd.to_datetime(pd.Series(dates), utc=True).dt.tz_localize(None).dt.normalize()
+    else:
+        d = pd.to_datetime(pd.Series(dates)).dt.normalize()
     if d.empty:
         return pd.Series([], dtype="datetime64[ns]")
     if sessions is None:

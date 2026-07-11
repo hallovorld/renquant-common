@@ -8,8 +8,8 @@ name = "renquant-common"
 # net-of-cost primitives + canonical CostModelSpec serialization/identity).
 # Version-ADDRESSABLE contract: consumers that require the cost primitive
 # pin ``renquant-common>=0.12.0`` and fail closed below it (Codex review,
-# common#28). 0.11.0 is claimed by the open #27 (ALWAYS_OPEN calendar);
-# whichever of #27/#28 lands second rebases its version above the other.
+# common#28). 0.11.0 was #27 (ALWAYS_OPEN calendar), merged first; this PR
+# rebases its version above it.
 version = "0.12.0"
 description = "Shared RenQuant contracts and pipeline primitives."
 readme = "README.md"
