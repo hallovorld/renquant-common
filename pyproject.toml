@@ -4,13 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "renquant-common"
-# 0.12.0: adds ``renquant_common.cost_model`` (crypto RFC D-C8a — generic
-# net-of-cost primitives + canonical CostModelSpec serialization/identity).
-# Version-ADDRESSABLE contract: consumers that require the cost primitive
-# pin ``renquant-common>=0.12.0`` and fail closed below it (Codex review,
-# common#28). 0.11.0 was #27 (ALWAYS_OPEN calendar), merged first; this PR
-# rebases its version above it.
-version = "0.12.0"
+# 0.13.0: adds ``renquant_common.pair_slug`` (crypto RFC D-C1, the other
+# half alongside #27's ALWAYS_OPEN calendar mode — the canonical
+# pair/slug symbol-normalization primitive renquant-base-data#41's local
+# stand-in exists to repoint onto). 0.12.0 was #28 (net-cost primitives),
+# merged first; this PR rebases its version above it (same
+# collision-handling convention #27/#28 already used).
+version = "0.13.0"
 description = "Shared RenQuant contracts and pipeline primitives."
 readme = "README.md"
 requires-python = ">=3.10"
