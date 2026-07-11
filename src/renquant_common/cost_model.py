@@ -41,6 +41,20 @@ Conventions (frozen; consumers and tests pin these):
 
 No I/O, no network, no pandas dependency — pure float/mapping arithmetic,
 deterministic, so replay and runtime cannot diverge on environment.
+
+Version addressability (Codex review, common#28 r2): this module ships in
+renquant-common **0.12.0**. A consumer that REQUIRES the cost primitive
+pins ``renquant-common>=0.12.0`` and fails closed below it — no local
+forks, no silent fallbacks.
+
+Cost-spec identity (Codex review, common#28): every downstream evidence
+artifact that reports a net-of-cost number (WF-gate results, run bundles,
+model-card metrics) MUST stamp :func:`cost_model_content_sha256` of the
+exact spec used (plus :data:`COST_MODEL_FINGERPRINT_SCHEMA_VERSION`), so
+any net figure is mechanically traceable to — and re-verifiable against —
+the one cost identity that produced it. ``CostModelSpec.to_dict()`` /
+:func:`cost_model_spec_from_dict` are the canonical round-trip
+serialization backing that identity.
 """
 from __future__ import annotations
 
@@ -72,6 +86,8 @@ _BPS = 1e4
 #: docstring cites).
 COST_MODEL_FINGERPRINT_SCHEMA_VERSION = 1
 
+_SPEC_FIELDS = ("fee_bps", "spread_bps", "slippage_bps", "increment_rounding_bps")
+
 
 def _require_finite_nonneg(name: str, value: float) -> float:
     v = float(value)
@@ -102,7 +118,7 @@ class CostModelSpec:
     increment_rounding_bps: float = 0.0
 
     def __post_init__(self) -> None:
-        for name in ("fee_bps", "spread_bps", "slippage_bps", "increment_rounding_bps"):
+        for name in _SPEC_FIELDS:
             object.__setattr__(self, name, _require_finite_nonneg(name, getattr(self, name)))
 
     def to_dict(self) -> dict[str, float]:
@@ -118,10 +134,24 @@ class CostModelSpec:
 
 
 def cost_model_spec_from_dict(payload: Mapping[str, float]) -> CostModelSpec:
-    """Inverse of :meth:`CostModelSpec.to_dict` — round-trips exactly.
+    """Strict inverse of :meth:`CostModelSpec.to_dict` — round-trips exactly.
 
     Missing keys default the same way the constructor does (0.0), so a
-    persisted fee-only spec deserializes identically to how it was built."""
+    persisted fee-only spec deserializes identically to how it was built.
+    UNKNOWN keys are a hard error (r2): a mistyped or future component must
+    never be silently dropped — that would let two DIFFERENT intended specs
+    round-trip to the SAME content identity, defeating the fingerprint.
+    """
+    if not isinstance(payload, Mapping):
+        raise ValueError(
+            f"cost_model_spec_from_dict expects a mapping, got {type(payload).__name__!r}"
+        )
+    unknown = sorted(set(payload) - set(_SPEC_FIELDS))
+    if unknown:
+        raise ValueError(
+            f"cost_model_spec_from_dict: unknown component(s) {unknown}; "
+            f"known: {list(_SPEC_FIELDS)}"
+        )
     return CostModelSpec(
         fee_bps=payload.get("fee_bps", 0.0),
         spread_bps=payload.get("spread_bps", 0.0),
@@ -140,7 +170,16 @@ def cost_model_content_sha256(spec: CostModelSpec) -> str:
     structurally impossible to miss. Canonical JSON: sorted keys, compact
     separators, NaN/Inf rejected (``CostModelSpec`` itself already requires
     every field finite, so this can only ever reject a construction bug,
-    never silently hash a NaN as if it were a real value)."""
+    never silently hash a NaN as if it were a real value).
+
+    Verifier flow for a stamped payload:
+    ``cost_model_content_sha256(cost_model_spec_from_dict(stamped_dict))``.
+    """
+    if not isinstance(spec, CostModelSpec):
+        raise ValueError(
+            "cost_model_content_sha256 expects a CostModelSpec (build one via "
+            f"cost_model_spec_from_dict for stamped payloads), got {type(spec).__name__!r}"
+        )
     blob = json.dumps(
         spec.to_dict(), sort_keys=True, separators=(",", ":"), allow_nan=False
     )

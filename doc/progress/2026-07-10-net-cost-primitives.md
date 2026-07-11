@@ -41,31 +41,59 @@ or default exists here. The crypto taker-fee default, the BTC-baseline
 comparison and the crypto promotion decision live in renquant-model
 (D-C8b), consuming this primitive.
 
-## Versioning
+## Versioning (r2 — Codex review)
 
-NO version bump in this PR: renquant-common #27 (ALWAYS_OPEN calendar,
-open) already claims 0.11.0, and this environment's installed metadata is
-stale (0.8.1) so the api-snapshot triple-agreement tests cannot verify a
-bump anyway (pre-existing env failure, also red on main). The module is
-submodule-scoped (no `__init__`/api-snapshot surface change); consumers
-feature-detect by import with an identical local fallback (the
-pipeline#183 soft-consume pattern), so merge order stays free with no pin
-bump. Version rolls up with the next release PR.
+**0.10.0 -> 0.12.0** (version-ADDRESSABLE, r2 correction): consumers that
+REQUIRE the cost primitive pin `renquant-common>=0.12.0` and fail closed
+below it — the r1 "feature-detect by import with a local fallback" posture
+is withdrawn on the consumer side (model#43 r2 removes its fallback).
+0.11.0 stays claimed by the open #27 (ALWAYS_OPEN calendar); whichever of
+#27/#28 lands second rebases its version above the other (documented in
+pyproject.toml). api-snapshot version updated to 0.12.0; no `__init__`
+surface change (submodule-scoped API, the `model_fingerprint` precedent).
+The two api-snapshot version tests remain red in THIS environment for the
+pre-existing reason only (installed metadata stale at 0.8.1 — also red on
+main); they pass in any env whose editable install is current.
+
+## Canonical serialization + content identity (r2 — Codex review; unified with the round-1 push)
+
+A parallel round-1 commit on this branch already added `to_dict` /
+`cost_model_spec_from_dict` / `cost_model_content_sha256` /
+`COST_MODEL_FINGERPRINT_SCHEMA_VERSION`; r2 keeps THOSE names as the one
+public API and folds in strictness + golden digests:
+
+- `CostModelSpec.to_dict()` — canonical serialization: always all four
+  components, declaration order.
+- `cost_model_spec_from_dict()` — strict inverse: unknown components are a
+  hard error (two different intended specs must never round-trip to the
+  same identity); missing components take the documented zero defaults.
+- `cost_model_content_sha256(spec)` — `sha256:<hex>` over the canonical
+  sorted-keys JSON (same construction as `model_fingerprint._digest`).
+  **Contract: every downstream evidence artifact reporting a net-of-cost
+  number (WF-gate results, run bundles, model cards) MUST stamp this
+  identity next to the number**; verifiers recompute via
+  `cost_model_content_sha256(cost_model_spec_from_dict(stamped))`.
+- Golden digests frozen in tests (changing them = breaking identity
+  change): fee-only 25bps ->
+  `sha256:00db27bb…`, full 25/10/5/2 -> `sha256:bd752be7…`.
 
 ## Evidence
 
-- 33 new tests (`tests/test_cost_model.py`): hand-computed per-side /
+- 41 new tests (`tests/test_cost_model.py`): hand-computed per-side /
   round-trip / rebalance-cost / net-return cases (numbers written out in
   comments), turnover conventions, unfilled-order semantics, validation
   hard-errors, asset-agnostic boundary check.
-- Full suite: 348 passed / 5 pre-existing environment failures, identical
-  on clean origin/main in this environment (2 api-snapshot version tests —
-  stale installed metadata 0.8.1; 2 sibling raw-regime-string scans + 1
-  umbrella byte-equivalence — sibling-checkout state, fail from the primary
-  checkout on main too). Zero new failures.
+- Serialization/identity: round-trip, strict unknown-key rejection,
+  frozen golden digests, int/float canonicalization, stamped-payload
+  verifier flow.
+- Full suite: 356 passed / 5 pre-existing environment failures, identical
+  in class and count on clean origin/main in this environment (2
+  api-snapshot version tests — stale installed metadata 0.8.1; 2 sibling
+  raw-regime-string scans + 1 umbrella byte-equivalence — sibling-checkout
+  state, fail from the primary checkout on main too). Zero new failures.
 
-## Merge order
+## Merge order (r2)
 
-Free: the consumer (renquant-model crypto fee gate, D-C8b) soft-consumes
-with an identical fallback. This PR SHOULD still merge first so the
-canonical exists before the fallback ever runs in anger.
+**This PR must merge FIRST.** model#43 r2 (per the same Codex review)
+removes its local fallback and hard-requires `renquant-common>=0.12.0`,
+failing closed when `cost_model` is absent.

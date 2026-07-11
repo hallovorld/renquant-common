@@ -51,3 +51,9 @@ this shared venv — reproduces identically on the pre-fix branch).
 
 None for this PR beyond the fingerprint helpers. Version-bump sequencing tracked
 above; revisit once #27 merges.
+
+**r2 update (same day)**: the coordinator directed claiming 0.12.0 NOW instead of
+waiting for #27 (which keeps 0.11.0; whichever PR lands second rebases its version
+above the other — documented in pyproject.toml). Done in the r2 commit, together
+with strict unknown-key rejection in `cost_model_spec_from_dict` and frozen golden
+digests. model#43 r2 consumes >=0.12.0 hard (its local fallback is removed).

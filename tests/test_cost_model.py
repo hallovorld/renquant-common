@@ -169,6 +169,51 @@ class TestFingerprint:
         }
 
 
+class TestFingerprintR2:
+    """r2 additions (Codex review, common#28): strictness + frozen golden
+    digests, so a stamped identity stays verifiable across versions/repos
+    and a mistyped component can never silently round-trip."""
+
+    def test_unknown_components_rejected(self) -> None:
+        # Two DIFFERENT intended specs must never round-trip to the SAME
+        # identity — an unknown (mistyped/future) key is a hard error.
+        with pytest.raises(ValueError, match="unknown component"):
+            cost_model_spec_from_dict({"fee_bps": 25.0, "taker_bps": 25.0})
+        with pytest.raises(ValueError, match="mapping"):
+            cost_model_spec_from_dict([("fee_bps", 25.0)])  # type: ignore[arg-type]
+
+    def test_golden_digests_frozen(self) -> None:
+        # GOLDEN values — frozen cross-repo/cross-version identity. If this
+        # test ever needs a new literal, that is a BREAKING identity change:
+        # every stamped evidence artifact would stop verifying.
+        assert cost_model_content_sha256(CostModelSpec(fee_bps=25.0)) == (
+            "sha256:00db27bbca21c5292077b6d4135a12f60c952fcc5be211768f9feb8f2d825661")
+        assert cost_model_content_sha256(
+            CostModelSpec(fee_bps=25.0, spread_bps=10.0, slippage_bps=5.0,
+                          increment_rounding_bps=2.0)) == (
+            "sha256:bd752be7592aa043556a6cee31d04ec0f52215fbed44797099a9d37bb516edbb")
+
+    def test_int_and_float_inputs_hash_identically(self) -> None:
+        assert cost_model_content_sha256(CostModelSpec(fee_bps=25)) == \
+            cost_model_content_sha256(CostModelSpec(fee_bps=25.0))
+
+    def test_identity_requires_a_spec_instance(self) -> None:
+        with pytest.raises(ValueError, match="CostModelSpec"):
+            cost_model_content_sha256({"fee_bps": 25.0})  # type: ignore[arg-type]
+
+    def test_to_dict_declaration_order_stable(self) -> None:
+        assert list(CostModelSpec().to_dict()) == [
+            "fee_bps", "spread_bps", "slippage_bps", "increment_rounding_bps"]
+
+    def test_stamped_payload_verifies_via_from_dict(self) -> None:
+        # the documented verifier flow: stamped dict -> from_dict -> sha
+        spec = CostModelSpec(fee_bps=25.0, spread_bps=10.0)
+        stamped = {"cost_spec": spec.to_dict(),
+                   "cost_spec_sha256": cost_model_content_sha256(spec)}
+        rebuilt = cost_model_spec_from_dict(stamped["cost_spec"])
+        assert cost_model_content_sha256(rebuilt) == stamped["cost_spec_sha256"]
+
+
 def test_asset_agnostic_no_crypto_symbols() -> None:
     """D-C8a boundary: the shared primitive carries NO asset-specific logic.
 
