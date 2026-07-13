@@ -124,3 +124,17 @@ def test_monkeypatching_default_db_does_not_disable_guard(monkeypatch, tmp_path)
     prod_path = Path.home() / "renquant-data/decision_ledger.db"
     with pytest.raises(RuntimeError, match="REAL production decision ledger"):
         connect(prod_path)
+
+
+def test_relpath_is_inlined_not_a_module_attribute(monkeypatch, tmp_path):
+    """The production relpath is a string literal inside the guard function,
+    not a module attribute. Setting a module attribute of any plausible name
+    cannot shift the guard boundary."""
+    monkeypatch.setattr(decision_ledger, "DEFAULT_DB", tmp_path / "safe.db")
+    monkeypatch.setattr(
+        decision_ledger, "_PRODUCTION_LEDGER_RELPATH", "fake/path.db",
+        raising=False,
+    )
+    prod_path = Path.home() / "renquant-data/decision_ledger.db"
+    with pytest.raises(RuntimeError, match="REAL production decision ledger"):
+        connect(prod_path)

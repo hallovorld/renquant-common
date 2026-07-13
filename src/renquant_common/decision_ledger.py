@@ -19,12 +19,6 @@ DEFAULT_DB = Path.home() / "renquant-data/decision_ledger.db"
 
 _VALID_VERDICTS = ("allow", "halve", "block")
 
-# Relative sub-path that identifies the production ledger under any
-# home directory.  The guard computes the full path from Path.home()
-# at call time — a function-local derivation that cannot be
-# monkeypatched away.
-_PRODUCTION_LEDGER_RELPATH = "renquant-data/decision_ledger.db"
-
 DDL = """
 CREATE TABLE IF NOT EXISTS decision_ledger (
   run_id TEXT NOT NULL, as_of DATE NOT NULL, scope TEXT NOT NULL,
@@ -79,7 +73,7 @@ def _guard_against_live_ledger_in_tests(db_path: str | Path) -> None:
     if resolved is None:
         return
     production_path = _canonical_path(
-        Path.home() / _PRODUCTION_LEDGER_RELPATH
+        Path.home() / "renquant-data/decision_ledger.db"
     )
     if production_path is None or resolved != production_path:
         return

@@ -40,20 +40,20 @@ Added a fail-closed check directly inside `renquant_common.decision_ledger.conne
   was imported, with no test running).
 - When that signal is present AND the resolved `db_path` (explicit or
   defaulted from `DEFAULT_DB`) canonicalizes (`expanduser().resolve()`) to
-  the same path as the real production `DEFAULT_DB`
-  (`~/renquant-data/decision_ledger.db`), raises `RuntimeError` with a
-  message explaining what happened and how to fix the test (explicit
-  `tmp_path`, monkeypatch `DEFAULT_DB`, or mock `connect`/`write_verdicts`
-  entirely). It does **not** silently redirect to a temp path — a silent
-  redirect would just mask the same bug in a different, harder-to-notice
-  way.
-- One explicit, named escape hatch for a deliberate real-path test:
-  `RENQUANT_ALLOW_LIVE_DECISION_LEDGER_IN_TESTS=1` (exact string match, not
-  "merely set"), meant to be set via `monkeypatch.setenv(...)` for exactly
-  one test. Checked for and confirmed absent: no test in common,
-  orchestrator, or pipeline currently touches the real ledger path on
-  purpose, so nothing needed the hatch wired up today — it exists for the
-  hypothetical future case the task explicitly asked to guard for.
+  the real production path (`~/renquant-data/decision_ledger.db`), raises
+  `RuntimeError` with a message explaining what happened and how to fix the
+  test (explicit `tmp_path`, monkeypatch `DEFAULT_DB`, or mock
+  `connect`/`write_verdicts` entirely). It does **not** silently redirect
+  to a temp path — a silent redirect would just mask the same bug in a
+  different, harder-to-notice way.
+- **No escape hatch.** There is no env var, no module attribute, no
+  mechanism to bypass the guard. If a pytest process needs the real
+  production path, the test is wrong — redesign it with a tmp_path.
+- The production path identity is a string literal (`"renquant-data/decision_ledger.db"`)
+  inlined inside the guard function body, joined with `Path.home()` at call
+  time. There is no module-level attribute for the relpath — monkeypatching
+  `DEFAULT_DB`, or setting any other module attribute, cannot shift the
+  protection boundary.
 - `write_verdicts()` takes an already-open `sqlite3.Connection` and never
   calls `connect()` itself, so it is unaffected by this guard; traced every
   caller of `connect()` in common/orchestrator/pipeline (see below) and
@@ -95,11 +95,11 @@ before — it moved from orchestrator without one). 9 cases: explicit
 `tmp_path`/`:memory:` paths work under pytest; no-path and explicit-real-path
 both raise; a canonicalization-robustness case (path spelling variant of the
 real path still raises, safely, since the guard fires before any
-`mkdir`/`sqlite3.connect`); the error message names the fixes; the escape
-hatch (proven via a monkeypatched `DEFAULT_DB` pointed at a `tmp_path`
-stand-in, so the test never opens the real file) allows the call through
-only when set to exactly `"1"`; guard is a no-op when `PYTEST_CURRENT_TEST`
-is absent (production behaviour unchanged).
+`mkdir`/`sqlite3.connect`); the error message names the fixes; guard is a
+no-op when `PYTEST_CURRENT_TEST` is absent (production behaviour unchanged);
+monkeypatching `DEFAULT_DB` does not disable the guard; monkeypatching a
+module attribute named `_PRODUCTION_LEDGER_RELPATH` cannot shift the guard
+boundary (the relpath is an inlined string literal, not an attribute).
 
 Full suite: 404 passed, 10 failed, 11 skipped. Confirmed via `git stash -u`
 that the same 10 failures (Newey-West/bootstrap numeric mismatches under this
