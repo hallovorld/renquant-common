@@ -10,6 +10,7 @@ reason, and the inputs it saw.  Append-only, WAL mode, busy timeout.
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from pathlib import Path
 from typing import Any, Iterable, Mapping
@@ -28,10 +29,83 @@ CREATE TABLE IF NOT EXISTS decision_ledger (
 """
 
 
+def _running_under_pytest() -> bool:
+    """Reliable "a test is executing right now" signal.
+
+    ``PYTEST_CURRENT_TEST`` is set by pytest for the duration of each test
+    and unset otherwise. This is deliberately NOT ``"pytest" in
+    sys.modules``: that can be true just because *something* imported
+    pytest (e.g. a conftest, a plugin, a REPL) with no test actually
+    running, which would make the guard fire outside of tests too.
+    """
+    return "PYTEST_CURRENT_TEST" in os.environ
+
+
+def _canonical_path(db_path: str | Path) -> Path | None:
+    """Canonicalise a DB path for equality comparisons so spelling
+    differences (``~``, trailing slashes, symlinks, relative segments)
+    can't be used to accidentally — or deliberately — dodge the
+    production-path check below. Returns ``None`` for the sqlite
+    in-memory pseudo-path, which can never refer to a real file."""
+    if str(db_path) == ":memory:":
+        return None
+    expanded = Path(db_path).expanduser()
+    try:
+        return expanded.resolve()
+    except (OSError, RuntimeError):
+        # resolve() can raise on pathological inputs (e.g. symlink loops);
+        # fail toward still comparing something rather than skipping the
+        # check silently.
+        return expanded
+
+
+def _guard_against_live_ledger_in_tests(db_path: str | Path) -> None:
+    """Raise loudly if ``db_path`` resolves to the real production ledger
+    while a pytest test is running.  There is no escape hatch: a pytest
+    process must never open the production ledger.
+
+    The production identity is derived from ``Path.home()`` and the
+    hard-coded relative path at call time — a function-local computation
+    that cannot be defeated by monkeypatching a module attribute."""
+    if not _running_under_pytest():
+        return
+    resolved = _canonical_path(db_path)
+    if resolved is None:
+        return
+    production_path = _canonical_path(
+        Path.home() / "renquant-data/decision_ledger.db"
+    )
+    if production_path is None or resolved != production_path:
+        return
+    raise RuntimeError(
+        f"refusing to open the REAL production decision ledger "
+        f"({production_path}) from inside a pytest test run.\n\n"
+        "This is almost always a bug: a test's mocking failed to "
+        "intercept a decision_ledger.connect() call, and the real, "
+        "unmocked call is about to read/write the LIVE trading system's "
+        "decision ledger. A 2026-07 incident hit exactly this path and "
+        "wrote fixture rows into the production DB.\n\n"
+        "Fix the test instead of bypassing this guard:\n"
+        "  - pass an explicit non-production db_path, e.g. "
+        "connect(tmp_path / 'test.db')\n"
+        "  - or monkeypatch the default: monkeypatch.setattr("
+        "'renquant_common.decision_ledger.DEFAULT_DB', tmp_path / 'x.db')\n"
+        "  - or mock connect()/write_verdicts() so this code never runs\n\n"
+        "There is no escape hatch.  If you think a test needs the real "
+        "production path, that test is wrong — redesign it to use a "
+        "tmp_path-backed stand-in."
+    )
+
+
 def connect(db_path: str | Path | None = None) -> sqlite3.Connection:
-    """Open (and create) the ledger DB."""
+    """Open (and create) the ledger DB.
+
+    Fail-closed safety net: under pytest, refuses to open the real
+    production DB (``DEFAULT_DB``) — see ``_guard_against_live_ledger_in_tests``.
+    """
     if db_path is None:
         db_path = DEFAULT_DB
+    _guard_against_live_ledger_in_tests(db_path)
     if str(db_path) != ":memory:":
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
     c = sqlite3.connect(str(db_path), timeout=10)
