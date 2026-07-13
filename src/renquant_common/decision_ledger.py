@@ -17,20 +17,13 @@ from typing import Any, Iterable, Mapping
 
 DEFAULT_DB = Path.home() / "renquant-data/decision_ledger.db"
 
-# Immutable identity of the REAL production ledger. The pytest guard
-# compares against THIS, not DEFAULT_DB — so monkeypatching DEFAULT_DB
-# to a tmp file (the normal test pattern) cannot redefine what counts
-# as "production" and accidentally disable the guard.
-_PRODUCTION_LEDGER_PATH: Path = Path.home() / "renquant-data/decision_ledger.db"
-
 _VALID_VERDICTS = ("allow", "halve", "block")
 
-# Defense-in-depth guard (2026-07 incident): a pytest process whose mocking
-# failed to intercept a ``connect()`` call silently wrote fixture rows into
-# the REAL production decision ledger on a live trading machine. This module
-# is the single point of truth for opening that DB — see the fail-closed
-# check in ``connect()`` below and its explicit escape hatch.
-ALLOW_LIVE_LEDGER_IN_TESTS_ENV = "RENQUANT_ALLOW_LIVE_DECISION_LEDGER_IN_TESTS"
+# Relative sub-path that identifies the production ledger under any
+# home directory.  The guard computes the full path from Path.home()
+# at call time — a function-local derivation that cannot be
+# monkeypatched away.
+_PRODUCTION_LEDGER_RELPATH = "renquant-data/decision_ledger.db"
 
 DDL = """
 CREATE TABLE IF NOT EXISTS decision_ledger (
@@ -74,17 +67,21 @@ def _canonical_path(db_path: str | Path) -> Path | None:
 
 def _guard_against_live_ledger_in_tests(db_path: str | Path) -> None:
     """Raise loudly if ``db_path`` resolves to the real production ledger
-    while a pytest test is running, unless the explicit escape hatch is
-    set. See module docstring for the incident this defends against."""
+    while a pytest test is running.  There is no escape hatch: a pytest
+    process must never open the production ledger.
+
+    The production identity is derived from ``Path.home()`` and the
+    hard-coded relative path at call time — a function-local computation
+    that cannot be defeated by monkeypatching a module attribute."""
     if not _running_under_pytest():
         return
     resolved = _canonical_path(db_path)
     if resolved is None:
         return
-    production_path = _canonical_path(_PRODUCTION_LEDGER_PATH)
+    production_path = _canonical_path(
+        Path.home() / _PRODUCTION_LEDGER_RELPATH
+    )
     if production_path is None or resolved != production_path:
-        return
-    if os.environ.get(ALLOW_LIVE_LEDGER_IN_TESTS_ENV) == "1":
         return
     raise RuntimeError(
         f"refusing to open the REAL production decision ledger "
@@ -100,11 +97,9 @@ def _guard_against_live_ledger_in_tests(db_path: str | Path) -> None:
         "  - or monkeypatch the default: monkeypatch.setattr("
         "'renquant_common.decision_ledger.DEFAULT_DB', tmp_path / 'x.db')\n"
         "  - or mock connect()/write_verdicts() so this code never runs\n\n"
-        "If a test genuinely needs the real production path on purpose "
-        "(e.g. an explicit, deliberate read-only smoke test — not a "
-        "default fallback), set "
-        f"{ALLOW_LIVE_LEDGER_IN_TESTS_ENV}=1 via monkeypatch.setenv(...) "
-        "for that one test only. Do not set it globally or in conftest."
+        "There is no escape hatch.  If you think a test needs the real "
+        "production path, that test is wrong — redesign it to use a "
+        "tmp_path-backed stand-in."
     )
 
 
