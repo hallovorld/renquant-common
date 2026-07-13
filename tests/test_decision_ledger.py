@@ -23,6 +23,7 @@ from renquant_common import decision_ledger
 from renquant_common.decision_ledger import (
     ALLOW_LIVE_LEDGER_IN_TESTS_ENV,
     DEFAULT_DB,
+    _PRODUCTION_LEDGER_PATH,
     connect,
     write_verdicts,
 )
@@ -78,7 +79,7 @@ def test_connect_with_spelling_variant_of_production_path_still_raises():
     round-trip through str()) must not bypass the check — both sides are
     canonicalised before comparison. This never touches disk: the guard
     raises before any mkdir/sqlite3.connect happens."""
-    home = str(DEFAULT_DB.parent.parent)  # .../<home>
+    home = str(_PRODUCTION_LEDGER_PATH.parent.parent)  # .../<home>
     variant = f"{home}/./renquant-data/../renquant-data/decision_ledger.db"
     with pytest.raises(RuntimeError, match="REAL production decision ledger"):
         connect(variant)
@@ -100,11 +101,12 @@ def test_error_message_explains_the_fix(tmp_path):
 def test_escape_hatch_allows_the_configured_production_path_through(
     monkeypatch, tmp_path,
 ):
-    """Point DEFAULT_DB (the thing the guard treats as "the production
-    path") at a tmp_path-backed stand-in, so we can prove the escape-hatch
-    logic end to end without the test ever opening the *real*
+    """Point _PRODUCTION_LEDGER_PATH (the immutable guard boundary) at a
+    tmp_path-backed stand-in, so we can prove the escape-hatch logic end
+    to end without the test ever opening the *real*
     ~/renquant-data/decision_ledger.db."""
     fake_prod = tmp_path / "renquant-data" / "decision_ledger.db"
+    monkeypatch.setattr(decision_ledger, "_PRODUCTION_LEDGER_PATH", fake_prod)
     monkeypatch.setattr(decision_ledger, "DEFAULT_DB", fake_prod)
 
     # Without the escape hatch: still raises, even though it's a tmp_path
@@ -129,6 +131,7 @@ def test_escape_hatch_value_other_than_1_does_not_bypass(monkeypatch, tmp_path):
     """Not a blanket bypass: the env var must be exactly '1', not merely set
     (guards against e.g. an accidentally-inherited empty-string env var)."""
     fake_prod = tmp_path / "renquant-data" / "decision_ledger.db"
+    monkeypatch.setattr(decision_ledger, "_PRODUCTION_LEDGER_PATH", fake_prod)
     monkeypatch.setattr(decision_ledger, "DEFAULT_DB", fake_prod)
     monkeypatch.setenv(ALLOW_LIVE_LEDGER_IN_TESTS_ENV, "0")
     with pytest.raises(RuntimeError, match="REAL production decision ledger"):
@@ -152,3 +155,18 @@ def test_guard_is_a_noop_when_pytest_current_test_is_absent(monkeypatch, tmp_pat
         assert fake_prod.exists()
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# (d) regression: monkeypatching DEFAULT_DB does NOT redefine guard boundary
+# ---------------------------------------------------------------------------
+
+def test_monkeypatching_default_db_does_not_disable_guard(monkeypatch, tmp_path):
+    """Codex review regression: if a test monkeypatches DEFAULT_DB to a
+    tmp_path (the normal test-redirect pattern), then makes an explicit
+    call with the REAL production path, the guard must STILL fire. Before
+    this fix, the guard compared against the mutable DEFAULT_DB, so
+    patching it away silently moved the protection boundary."""
+    monkeypatch.setattr(decision_ledger, "DEFAULT_DB", tmp_path / "safe.db")
+    with pytest.raises(RuntimeError, match="REAL production decision ledger"):
+        connect(_PRODUCTION_LEDGER_PATH)

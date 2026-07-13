@@ -17,6 +17,12 @@ from typing import Any, Iterable, Mapping
 
 DEFAULT_DB = Path.home() / "renquant-data/decision_ledger.db"
 
+# Immutable identity of the REAL production ledger. The pytest guard
+# compares against THIS, not DEFAULT_DB — so monkeypatching DEFAULT_DB
+# to a tmp file (the normal test pattern) cannot redefine what counts
+# as "production" and accidentally disable the guard.
+_PRODUCTION_LEDGER_PATH: Path = Path.home() / "renquant-data/decision_ledger.db"
+
 _VALID_VERDICTS = ("allow", "halve", "block")
 
 # Defense-in-depth guard (2026-07 incident): a pytest process whose mocking
@@ -75,11 +81,7 @@ def _guard_against_live_ledger_in_tests(db_path: str | Path) -> None:
     resolved = _canonical_path(db_path)
     if resolved is None:
         return
-    # Re-read DEFAULT_DB as a module global (not a value captured at import
-    # time) so ``monkeypatch.setattr(decision_ledger, "DEFAULT_DB", ...)``
-    # is honoured — that's one of the sanctioned ways for a test to
-    # legitimately redirect the default path.
-    production_path = _canonical_path(DEFAULT_DB)
+    production_path = _canonical_path(_PRODUCTION_LEDGER_PATH)
     if production_path is None or resolved != production_path:
         return
     if os.environ.get(ALLOW_LIVE_LEDGER_IN_TESTS_ENV) == "1":
