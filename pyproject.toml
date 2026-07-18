@@ -4,13 +4,14 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "renquant-common"
-# 0.13.0: adds ``renquant_common.pair_slug`` (crypto RFC D-C1, the other
-# half alongside #27's ALWAYS_OPEN calendar mode — the canonical
-# pair/slug symbol-normalization primitive renquant-base-data#41's local
-# stand-in exists to repoint onto). 0.12.0 was #28 (net-cost primitives),
-# merged first; this PR rebases its version above it (same
-# collision-handling convention #27/#28 already used).
-version = "0.13.0"
+# 0.14.0 (additive): adds ``renquant_common.contracts.bundle_contract`` —
+# the canonical home of the GOAL-5 AC4 serving-pair contract fixture
+# vectors (RFC RenQuant#492 §2.5: "a contract fixture in renquant-common
+# pins the verdict semantics both sides test against"; promoted from
+# renquant-pipeline#206). No root-export change; snapshot version updated
+# in the same PR. 0.13.0 added ``renquant_common.pair_slug`` (crypto RFC
+# D-C1).
+version = "0.14.0"
 description = "Shared RenQuant contracts and pipeline primitives."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -36,6 +37,12 @@ dependencies = [
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+# Ship the typing marker and the bundle-contract fixture vectors (RFC
+# RenQuant#492 §2.5) inside wheels; editable/path installs see them on
+# the filesystem regardless.
+renquant_common = ["py.typed", "contracts/bundle_contract_vectors.json"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
