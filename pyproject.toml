@@ -4,6 +4,16 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "renquant-common"
+# 0.15.0 (additive): adds ``renquant_common.walk_forward_fold_selection`` —
+# the canonical PIT fold-eligibility/selection contract mirrored from
+# ``WalkForwardModelLoader.entry_as_of`` (RenQuant
+# ``backtesting/renquant_104/kernel/walk_forward/loader.py``): closes a
+# Codex review finding on renquant-model PR #64, where a G4 walkforward-sim
+# evidence extraction script had reimplemented this date arithmetic using
+# calendar-day ``timedelta`` and no ``effective_train_cutoff_date`` support,
+# silently diverging from the real (business-day, effective-cutoff-aware)
+# loader semantics. No root-export change (submodule-only, like
+# ``model_fingerprint``); snapshot version updated in the same PR.
 # 0.14.0 (additive): adds ``renquant_common.contracts.bundle_contract`` —
 # the canonical home of the GOAL-5 AC4 serving-pair contract fixture
 # vectors (RFC RenQuant#492 §2.5: "a contract fixture in renquant-common
@@ -11,7 +21,7 @@ name = "renquant-common"
 # renquant-pipeline#206). No root-export change; snapshot version updated
 # in the same PR. 0.13.0 added ``renquant_common.pair_slug`` (crypto RFC
 # D-C1).
-version = "0.14.0"
+version = "0.15.0"
 description = "Shared RenQuant contracts and pipeline primitives."
 readme = "README.md"
 requires-python = ">=3.10"
