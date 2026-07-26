@@ -53,11 +53,14 @@ def top_n_spread(df: pd.DataFrame, score_col: str, label_col: str, *,
     """Per-date mean label of the top-``n`` by score, minus the cross mean.
 
     ``tie_col`` is the required deterministic tie-break key (e.g. the
-    entity identifier column): ties in ``score_col`` are broken by
-    ascending ``tie_col`` via a stable sort, so the top-N book is invariant
-    to input row order. ``DataFrame.nlargest`` alone is not — the same
-    one-date panel returned opposite-signed spreads after only permuting
-    two tied top-score rows.
+    entity identifier column) and MUST be unique within each date: a
+    residual tie in ``(score_col, tie_col)`` is ambiguous, and this fails
+    closed rather than silently falling back to input row order (a stable
+    sort over a non-unique secondary key still depends on row order once
+    both keys tie). Selection reads the sorted column positionally rather
+    than via ``DataFrame.loc`` on the sorted index, so a duplicated
+    ``DataFrame`` index — routine after ``pd.concat`` / merges in research
+    panels — cannot pull rows outside the true top-N into the result.
 
     ``winsorize`` clips the label at ±that value FIRST — the anti-lottery
     read every prereg in this line carries alongside the raw spread.
@@ -67,11 +70,24 @@ def top_n_spread(df: pd.DataFrame, score_col: str, label_col: str, *,
     for d, g in df[cols].dropna().groupby(date_col):
         if len(g) < min_names:
             continue
-        v = g[label_col] if winsorize is None else g[label_col].clip(
-            -winsorize, winsorize)
-        top = g.sort_values([score_col, tie_col], ascending=[False, True],
-                            kind="mergesort").index[:n]
-        out[d] = float(v.loc[top].mean() - v.mean())
+        if g[tie_col].duplicated().any():
+            dupes = sorted(g.loc[g[tie_col].duplicated(keep=False),
+                                 tie_col].unique().tolist())
+            raise ValueError(
+                f"top_n_spread: tie_col={tie_col!r} is not unique within "
+                f"date={d!r} (duplicated values: {dupes}); a shared "
+                "research primitive requires an unambiguous per-date "
+                "tie-break key")
+        label = (g[label_col] if winsorize is None
+                 else g[label_col].clip(-winsorize, winsorize))
+        ranked = pd.DataFrame({
+            "_score": g[score_col].to_numpy(),
+            "_tie": g[tie_col].to_numpy(),
+            "_label": label.to_numpy(),
+        }).sort_values(["_score", "_tie"], ascending=[False, True],
+                       kind="mergesort")
+        top_values = ranked["_label"].to_numpy()[:n]
+        out[d] = float(top_values.mean() - label.mean())
     return pd.Series(out, dtype=float).sort_index()
 
 

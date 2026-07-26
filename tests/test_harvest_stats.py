@@ -58,6 +58,44 @@ def test_top_n_spread_tie_break_is_row_order_invariant():
     assert a.iloc[0] == b.iloc[0]
 
 
+def test_top_n_spread_duplicated_tie_col_within_date_fails_closed():
+    # reviewer repro: when score AND tie_col both tie, stable mergesort
+    # falls back to input row order — ambiguous, must fail closed instead.
+    d = pd.Timestamp("2024-01-02")
+    df = pd.DataFrame({
+        "date": d,
+        "ticker": ["T0", "T0"] + [f"T{i}" for i in range(2, 30)],
+        "score": [5.0, 5.0] + [1.0] * 28,
+        "label": [10.0, -10.0] + [0.0] * 28,
+    })
+    try:
+        top_n_spread(df, "score", "label", tie_col="ticker", n=1,
+                     min_names=5)
+    except ValueError:
+        return
+    raise AssertionError("expected ValueError for duplicated tie_col within date")
+
+
+def test_top_n_spread_duplicate_dataframe_index_does_not_leak_rows():
+    # reviewer repro: a duplicated pandas index (routine after concat/merge
+    # without reset_index) must not let re-selection-by-label pull extra
+    # rows into the top-N. Result must equal the unique-index computation.
+    d = pd.Timestamp("2024-01-02")
+    base = pd.DataFrame({
+        "date": d,
+        "ticker": [f"T{i}" for i in range(30)],
+        "score": [5.0, 4.0] + [1.0] * 28,
+        "label": [10.0, -10.0] + [0.0] * 28,
+    })
+    dup_index = base.copy()
+    dup_index.index = [0, 0] + list(range(2, 30))
+    a = top_n_spread(base, "score", "label", tie_col="ticker", n=1,
+                     min_names=5)
+    b = top_n_spread(dup_index, "score", "label", tie_col="ticker", n=1,
+                     min_names=5)
+    assert a.iloc[0] == b.iloc[0] == 10.0
+
+
 def test_placebo_preserves_marginals_destroys_alignment():
     df = _panel(n_dates=20)
     pl = shuffle_labels_within_date(df, "label", seed=7)
