@@ -46,21 +46,31 @@ def per_date_rank_ic(df: pd.DataFrame, score_col: str, label_col: str,
     return pd.Series(out, dtype=float).sort_index()
 
 
-def top_n_spread(df: pd.DataFrame, score_col: str, label_col: str,
-                 n: int = 10, date_col: str = "date", min_names: int = 30,
+def top_n_spread(df: pd.DataFrame, score_col: str, label_col: str, *,
+                 tie_col: str, n: int = 10, date_col: str = "date",
+                 min_names: int = 30,
                  winsorize: Optional[float] = None) -> pd.Series:
     """Per-date mean label of the top-``n`` by score, minus the cross mean.
+
+    ``tie_col`` is the required deterministic tie-break key (e.g. the
+    entity identifier column): ties in ``score_col`` are broken by
+    ascending ``tie_col`` via a stable sort, so the top-N book is invariant
+    to input row order. ``DataFrame.nlargest`` alone is not — the same
+    one-date panel returned opposite-signed spreads after only permuting
+    two tied top-score rows.
 
     ``winsorize`` clips the label at ±that value FIRST — the anti-lottery
     read every prereg in this line carries alongside the raw spread.
     """
     out = {}
-    for d, g in df[[date_col, score_col, label_col]].dropna().groupby(date_col):
+    cols = [date_col, score_col, label_col, tie_col]
+    for d, g in df[cols].dropna().groupby(date_col):
         if len(g) < min_names:
             continue
         v = g[label_col] if winsorize is None else g[label_col].clip(
             -winsorize, winsorize)
-        top = g.nlargest(n, score_col).index
+        top = g.sort_values([score_col, tie_col], ascending=[False, True],
+                            kind="mergesort").index[:n]
         out[d] = float(v.loc[top].mean() - v.mean())
     return pd.Series(out, dtype=float).sort_index()
 
@@ -85,21 +95,25 @@ def moving_block_ci(x: np.ndarray | pd.Series, block: int,
                     seed: int = 20260725) -> tuple[float, float]:
     """Percentile CI on the mean of a serially dependent daily series.
 
-    ``block`` should match the label's overlap horizon (60 for fwd_60d):
-    consecutive per-date statistics share up to (h−1)/h of their label
-    window, and a naive t-test overstates significance by roughly √h.
+    Delegates sampling to ``arch.bootstrap.MovingBlockBootstrap`` — the
+    repo convention established by ``metrics.block_bootstrap`` — rather
+    than hand-rolling block resampling. ``block`` should match the label's
+    overlap horizon (60 for fwd_60d): consecutive per-date statistics
+    share up to (h−1)/h of their label window, and a naive t-test
+    overstates significance by roughly √h.
     """
+    if block <= 0:
+        raise ValueError(f"block must be positive, got {block}")
+    if n_boot <= 0:
+        raise ValueError(f"n_boot must be positive, got {n_boot}")
+    from arch.bootstrap import MovingBlockBootstrap  # noqa: PLC0415
     x = np.asarray(pd.Series(x).dropna(), dtype=float)
     n = len(x)
     if n <= block or n == 0:
         return float("nan"), float("nan")
-    rng = np.random.default_rng(seed)
-    starts = np.arange(n - block + 1)
-    k = int(np.ceil(n / block))
-    means = np.empty(n_boot)
-    for b in range(n_boot):
-        idx = rng.choice(starts, size=k, replace=True)
-        means[b] = np.concatenate([x[i:i + block] for i in idx])[:n].mean()
+    bs = MovingBlockBootstrap(int(block), x, seed=int(seed))
+    means = np.asarray(bs.apply(lambda arr: float(np.mean(arr)),
+                                reps=int(n_boot))).reshape(-1)
     return (float(np.percentile(means, 100 * alpha / 2)),
             float(np.percentile(means, 100 * (1 - alpha / 2))))
 

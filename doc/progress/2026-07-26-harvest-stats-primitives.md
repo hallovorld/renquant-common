@@ -9,11 +9,17 @@ WHY/DIR:   Five hand-rolled copies of these primitives in the 07-24/25 research 
            price denominator; null merge keys; degenerate cross-sections). Each unit
            test pins one class. Standing rule: screens IMPORT these, never re-derive.
 EVIDENCE:
-  artifact:      tests/test_harvest_stats.py — 5 passed
+  artifact:      tests/test_harvest_stats.py — 7 passed (2 added post-review:
+                 moving_block_ci fail-closed params, top_n_spread tie-break
+                 row-order invariance)
   prod or exp:   library code; no runtime consumer changed in this PR
   existing data: complements metrics.block_bootstrap (stationary CI) — no overlap;
-                 suite 443+6: the 6 failures VERIFIED PRE-EXISTING on main
-                 (reproduced with this PR's files removed: 438+6)
-  best-known?:   moving-block kept because the frozen preregs specify it
+                 suite 445+6: the 6 failures VERIFIED PRE-EXISTING on main
+                 (reproduced with this PR's files removed: 443+6)
+  best-known?:   moving-block kept because the frozen preregs specify it;
+                 sampling now delegates to arch.bootstrap.MovingBlockBootstrap
+                 (repo convention) instead of a hand-rolled loop, and
+                 top_n_spread requires a tie_col so ties in score_col resolve
+                 deterministically (post codex review, 2026-07-26)
   scope:         additive; executor adoption is follow-up work in their repos
 NEXT:      migrate model-repo executors to import these (mechanical, separate PRs).

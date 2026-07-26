@@ -30,14 +30,32 @@ def test_rank_ic_positive_on_correlated_and_skips_degenerate():
 
 def test_top_n_spread_sign_and_winsorize_caps_tail():
     df = _panel()
-    sp = top_n_spread(df, "score", "label", n=5)
+    sp = top_n_spread(df, "score", "label", tie_col="ticker", n=5)
     assert sp.mean() > 0
     big = df.copy()
     first = big[big.date == big.date.min()].nlargest(1, "score").index
     big.loc[first, "label"] = 100.0
-    raw = top_n_spread(big, "score", "label", n=5)
-    w = top_n_spread(big, "score", "label", n=5, winsorize=0.5)
+    raw = top_n_spread(big, "score", "label", tie_col="ticker", n=5)
+    w = top_n_spread(big, "score", "label", tie_col="ticker", n=5, winsorize=0.5)
     assert raw.iloc[0] > w.iloc[0]  # winsorized read caps the lottery point
+
+
+def test_top_n_spread_tie_break_is_row_order_invariant():
+    # reviewer repro: two tied top-score rows: nlargest's result depended on
+    # row order (10.0 vs -10.0). tie_col must make the result invariant.
+    d = pd.Timestamp("2024-01-02")
+    base = pd.DataFrame({
+        "date": d,
+        "ticker": [f"T{i}" for i in range(30)],
+        "score": [5.0, 5.0] + [1.0] * 28,
+        "label": [10.0, -10.0] + [0.0] * 28,
+    })
+    swapped = base.iloc[[1, 0] + list(range(2, 30))].reset_index(drop=True)
+    a = top_n_spread(base, "score", "label", tie_col="ticker", n=1,
+                     min_names=5)
+    b = top_n_spread(swapped, "score", "label", tie_col="ticker", n=1,
+                     min_names=5)
+    assert a.iloc[0] == b.iloc[0]
 
 
 def test_placebo_preserves_marginals_destroys_alignment():
@@ -59,6 +77,19 @@ def test_moving_block_ci_widens_with_dependence():
     lo1, hi1 = moving_block_ci(dep, block=1, n_boot=2000)
     lo2, hi2 = moving_block_ci(dep, block=60, n_boot=2000)
     assert (hi2 - lo2) > 1.5 * (hi1 - lo1)
+
+
+def test_moving_block_ci_fails_closed_on_malformed_params():
+    # malformed config must raise, not silently misbehave (ZeroDivisionError
+    # for block=0, IndexError for n_boot=0 on the pre-fix implementation)
+    x = [1.0, 2.0, 3.0, 4.0, 5.0]
+    for kwargs in ({"block": 0}, {"block": -1}, {"n_boot": 0}, {"n_boot": -5}):
+        params = {"block": 2, "n_boot": 10, **kwargs}
+        try:
+            moving_block_ci(x, **params)
+        except ValueError:
+            continue
+        raise AssertionError(f"expected ValueError for {params}")
 
 
 def test_paired_clean_uses_common_dates_only():
