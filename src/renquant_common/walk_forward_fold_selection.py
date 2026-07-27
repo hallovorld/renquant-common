@@ -138,11 +138,13 @@ def select_latest_eligible_fold(
 
     Mirrors ``WalkForwardModelLoader.entry_as_of``: among entries whose
     ``safe_last_label_date`` is strictly before ``today``, pick the one with
-    the latest ``cutoff_date``. Entries need not be pre-sorted; ties on
-    ``cutoff_date`` are not expected from a well-formed manifest and are
-    resolved by list order (last-in-max wins), matching the real loader's
-    ascending-sort-then-take-last behaviour for a manifest with unique
-    cutoff dates.
+    the latest ``cutoff_date``. Entries need not be pre-sorted. Ties on
+    ``cutoff_date`` are not expected from a well-formed manifest; when they
+    do occur, Python ``max`` keeps the FIRST maximal element in iteration
+    order, so the caller's list order decides the pick. A caller that must
+    reproduce the pipeline loader's historical last-among-ties rule feeds
+    entries in DESCENDING order (see renquant-pipeline#214's parity test,
+    which pins this list-order sensitivity explicitly).
     """
     today_ts = pd.Timestamp(today)
     eligible = [
