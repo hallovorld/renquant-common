@@ -220,6 +220,22 @@ PREDICTIVE_KEYS = frozenset({
 #:   actual serving behavior derives from ``feature_cols`` (PREDICTIVE)
 #:   plus runtime config (``sentiment_runtime_gate_requirement``), never
 #:   from these stamped values.
+#: * ``provenance_schema_version`` / ``recipe_id`` /
+#:   ``required_axis_fields`` — recipe-provenance ATTESTATIONS from the
+#:   pipeline round-8 provenance-schema contract (renquant-pipeline #426:
+#:   ``panel_scorer.py::stamp_provenance_schema`` — an artifact whose
+#:   confirmed provenance axes resolve to a recognized recipe stamps
+#:   these three fields; the shadow admission gate re-verifies the
+#:   claimed recipe against the actually-present axis fields, never
+#:   trusting the stamp blindly). Same category as the training-window
+#:   provenance keys above: consumed by admission/staleness gates only,
+#:   never by scoring — the trained function is already bound via the
+#:   booster bytes. Classifying them OPERATIONAL follows the 0.9.2
+#:   precedent (see the FINGERPRINT_SCHEMA_VERSION note below): these
+#:   keys previously hard-errored at stamp AND verify time (no artifact
+#:   carrying them was ever stampable under v1), so excluding them from
+#:   the hash is HASH-PRESERVING by construction — every payload that
+#:   hashed before hashes identically — and the schema version stays 1.
 OPERATIONAL_KEYS = frozenset({
     # Paths, file hashes, fingerprint stamps.
     "metadata",
@@ -299,6 +315,12 @@ OPERATIONAL_KEYS = frozenset({
     "train_start_date",
     "effective_train_start_date",
     "train_window",
+    # Recipe-provenance stamp (pipeline round-8 contract attestations —
+    # see the bullet in the section docstring above; previously-REFUSED
+    # keys, so a hash-preserving addition: schema version stays 1).
+    "provenance_schema_version",
+    "recipe_id",
+    "required_axis_fields",
     "version",  # artifact-format version, not a model parameter
     "side_label",
 })

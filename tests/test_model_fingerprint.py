@@ -454,6 +454,66 @@ def test_unclassified_key_raises_listing_the_key() -> None:
     assert exc_info.value.keys == ("brand_new_field",)
 
 
+# ---------------------------------------------------------------------------
+# Recipe-provenance stamp keys (pipeline round-8 contract, 0.15.1).
+# ---------------------------------------------------------------------------
+
+
+_RECIPE_STAMP = {
+    "provenance_schema_version": "v1",
+    "recipe_id": "walkforward_only_v1",
+    "required_axis_fields": ["effective_train_cutoff_date"],
+}
+
+
+def test_recipe_provenance_stamp_keys_are_accepted() -> None:
+    """The three round-8 stamp keys are OPERATIONAL-classified: a payload
+    carrying them stamps and verifies without UnclassifiedKeyError."""
+    payload = _payload(
+        effective_train_cutoff_date="2026-04-28", **_RECIPE_STAMP
+    )
+    fp = model_content_sha256(payload)  # must not raise
+    assert fp.startswith("sha256:")
+    stamped = stamp(payload)
+    payload.update(stamped)
+    verify(
+        payload,
+        stamped["model_content_fingerprint"],
+        expected_version=stamped["fingerprint_schema_version"],
+    )
+    for key in _RECIPE_STAMP:
+        assert key in OPERATIONAL_KEYS
+        assert key not in PREDICTIVE_KEYS
+
+
+def test_recipe_provenance_stamp_is_hash_preserving() -> None:
+    """0.9.2-precedent property, proven not asserted: the SAME payload with
+    and without the three stamp keys hashes IDENTICALLY (they were
+    previously REFUSED, so no existing artifact's v1 hash can move — the
+    deployed clf shadow artifact's config_fingerprint must survive the
+    re-stamp unchanged)."""
+    without = _payload(effective_train_cutoff_date="2026-04-28")
+    with_stamp = _payload(
+        effective_train_cutoff_date="2026-04-28", **_RECIPE_STAMP
+    )
+    assert model_content_sha256(without) == model_content_sha256(with_stamp)
+    # each key alone is likewise hash-invisible
+    for key, value in _RECIPE_STAMP.items():
+        assert model_content_sha256(
+            _payload(**{key: value})
+        ) == model_content_sha256(_payload())
+
+
+def test_recipe_provenance_classification_does_not_loosen_totality() -> None:
+    """A genuinely unknown key still fails closed — including one that
+    merely RESEMBLES the newly classified stamp fields."""
+    with pytest.raises(UnclassifiedKeyError) as exc_info:
+        model_content_sha256(
+            _payload(recipe_id_v2="walkforward_only_v2", **_RECIPE_STAMP)
+        )
+    assert exc_info.value.keys == ("recipe_id_v2",)
+
+
 def test_unclassified_keys_all_listed() -> None:
     """EVERY unclassified key is reported, not just the first."""
     with pytest.raises(UnclassifiedKeyError) as exc_info:
