@@ -4,6 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "renquant-common"
+# 0.15.1 (patch, classification-only): classifies the pipeline round-8
+# recipe-provenance stamp keys (``provenance_schema_version`` /
+# ``recipe_id`` / ``required_axis_fields``) as OPERATIONAL in
+# ``model_fingerprint``'s tables — previously-REFUSED keys, so the change
+# is hash-preserving by construction (0.9.2 precedent;
+# FINGERPRINT_SCHEMA_VERSION stays 1). No root-export change; snapshot
+# version updated in the same PR.
 # 0.15.0 (additive): adds ``renquant_common.walk_forward_fold_selection`` —
 # the canonical PIT fold-eligibility/selection contract mirrored from
 # ``WalkForwardModelLoader.entry_as_of`` (RenQuant
@@ -21,7 +28,7 @@ name = "renquant-common"
 # renquant-pipeline#206). No root-export change; snapshot version updated
 # in the same PR. 0.13.0 added ``renquant_common.pair_slug`` (crypto RFC
 # D-C1).
-version = "0.15.0"
+version = "0.15.1"
 description = "Shared RenQuant contracts and pipeline primitives."
 readme = "README.md"
 requires-python = ">=3.10"
