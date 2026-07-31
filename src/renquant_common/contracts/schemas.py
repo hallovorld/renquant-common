@@ -185,6 +185,16 @@ class LiveRunBundle(BaseModel):
     execution_audit: tuple[dict[str, object], ...] = ()
     submitted_orders: tuple[dict[str, object], ...] = ()
 
+    #: GOAL-5 AC6 R4 (schema half). The WF-gate / operator-override provenance the run
+    #: served under. OPTIONAL by design: `None` means "this producer does not carry it
+    #: yet", which is the current state of every producer except the orchestrator's
+    #: daily bundle. It is typed rather than left to `extra` because pydantic's default
+    #: is `extra="ignore"` -- measured 2026-07-31, a bundle carrying
+    #: `wf_gate_provenance: "not-a-dict-at-all"` VALIDATED CLEAN and the field was
+    #: dropped entirely (`model_extra` was `None`). A contract that silently discards
+    #: the block cannot be the thing that enforces it.
+    wf_gate_provenance: dict[str, object] | None = None
+
     @model_validator(mode="after")
     def _validate_live_bundle_contract(self) -> "LiveRunBundle":
         if self.schema_version != 1:
@@ -200,14 +210,47 @@ class LiveRunBundle(BaseModel):
                 "LiveRunBundle requires at least one state source: "
                 "state_mutations, execution_audit, or submitted_orders"
             )
+        if self.wf_gate_provenance is not None:
+            status = self.wf_gate_provenance.get("status")
+            if status not in GATE_PROVENANCE_STATUSES:
+                raise ValueError(
+                    "LiveRunBundle wf_gate_provenance.status must be one of "
+                    f"{sorted(GATE_PROVENANCE_STATUSES)}; got {status!r}. "
+                    "A block that cannot say WHICH of 'no artifact', 'artifact "
+                    "without a stamp' or 'stamped' it is records nothing usable."
+                )
         return self
 
 
-def validate_live_run_bundle(bundle: LiveRunBundle | dict[str, object]) -> LiveRunBundle:
-    """Validate and return a :class:`LiveRunBundle` instance."""
-    if isinstance(bundle, LiveRunBundle):
-        return bundle
-    return LiveRunBundle.model_validate(bundle)
+#: The three statuses a gate-provenance block may carry. "Absent" is not one of them:
+#: a run with no artifact and a run whose artifact carries no stamp need different
+#: remedies, so they are different statuses rather than one missing field.
+GATE_PROVENANCE_STATUSES = frozenset(
+    {"present", "no_artifact_manifest", "artifact_carries_no_gate_stamp"}
+)
+
+
+def validate_live_run_bundle(
+    bundle: LiveRunBundle | dict[str, object],
+    *,
+    require_gate_provenance: bool = False,
+) -> LiveRunBundle:
+    """Validate and return a :class:`LiveRunBundle` instance.
+
+    ``require_gate_provenance`` is the AC6 R4 binding switch, and it defaults to
+    **False on purpose**. Turning it on today would fail every producer except the
+    orchestrator's daily bundle, and a contract that rejects the runs it is meant to
+    describe gets switched off rather than satisfied. The field is typed and validated
+    when present now; the requirement is flipped per-caller once producers carry it.
+    """
+    obj = bundle if isinstance(bundle, LiveRunBundle) else LiveRunBundle.model_validate(bundle)
+    if require_gate_provenance and obj.wf_gate_provenance is None:
+        raise ValueError(
+            "LiveRunBundle carries no wf_gate_provenance and this caller requires it "
+            "(GOAL-5 AC6 R4): a run must record the gate verdict and any operator "
+            "override it served under"
+        )
+    return obj
 
 
 class RegimeMetric(BaseModel):
