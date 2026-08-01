@@ -173,7 +173,20 @@ class DecisionTraceRow(BaseModel):
 
 
 class LiveRunBundle(BaseModel):
-    """Readonly live-run bundle for native-vs-bridge offboard parity."""
+    """Readonly live-run bundle contract.
+
+    BORN (2026-06-08, ad3d083) as the native-vs-bridge offboard PARITY container —
+    that is what the field set (decision_trace / order_intents / state_mutations /
+    execution_audit / submitted_orders) was shaped for. RETROFITTED (2026-08-01,
+    orch#564 AC6 R4) as the validation contract for the orchestrator's DAILY RUN
+    bundle: measured then, 0 of 7 real daily bundles validated until the single
+    ``source`` key was added, after which 7 of 7 did; the orchestrator now calls
+    ``validate_live_run_bundle`` at persist time in record-don't-raise mode. Readers
+    should not infer that the daily bundle was this schema's original subject, nor
+    that undeclared daily-bundle keys are contract-covered — pydantic's default
+    ``extra="ignore"`` DROPS them (see ``wf_gate_provenance``'s field note for why
+    the typed field exists at all).
+    """
 
     model_config = ConfigDict(frozen=True)
 
