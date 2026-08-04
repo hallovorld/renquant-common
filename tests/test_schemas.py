@@ -294,3 +294,60 @@ def test_acceptance_report_probability_bounds() -> None:
         AcceptanceReport(**common, dsr=1.5, pbo=0.0, wilcoxon_p=0.0)
     with pytest.raises(ValidationError):
         AcceptanceReport(**common, dsr=0.5, pbo=-0.01, wilcoxon_p=0.0)
+
+
+# ── orch#769 item 11: the traveling keys are typed, not silently dropped ─────
+
+def _bundle_base() -> dict:
+    return {
+        "source": "bridge_live_bundle",
+        "decision_trace": [{"ticker": "AAPL", "stage": "score"}],
+        "order_intents": [{"ticker": "AAPL", "action": "buy", "quantity": 1}],
+        "submitted_orders": [{"ticker": "AAPL", "status": "dry_run"}],
+    }
+
+
+def test_live_run_bundle_metadata_travels_typed() -> None:
+    b = validate_live_run_bundle({
+        **_bundle_base(),
+        "metadata": {"run_id": "r1", "config_fingerprint": "sha256:ab"},
+    })
+    assert b.metadata is not None and b.metadata["run_id"] == "r1"
+    # None = producer carries none; still valid.
+    assert validate_live_run_bundle(_bundle_base()).metadata is None
+
+
+def test_live_run_bundle_malformed_metadata_refuses() -> None:
+    """The measured 2026-07-31 class: with extra='ignore' a malformed value
+    used to VALIDATE CLEAN by being dropped. Typed field = it now refuses."""
+    with pytest.raises(ValidationError):
+        validate_live_run_bundle({
+            **_bundle_base(),
+            "metadata": "not-a-dict-at-all",
+        })
+    with pytest.raises(ValidationError, match="non-empty dict"):
+        validate_live_run_bundle({**_bundle_base(), "metadata": {}})
+
+
+def test_live_run_bundle_smalln_ledger_three_legal_states() -> None:
+    block = validate_live_run_bundle({
+        **_bundle_base(),
+        "smalln_ledger": {"schema_version": 1, "partition": {"eligible": []}},
+    })
+    assert isinstance(block.smalln_ledger, dict)
+    sentinel = validate_live_run_bundle({
+        **_bundle_base(), "smalln_ledger": "absent",
+    })
+    assert sentinel.smalln_ledger == "absent"
+    assert validate_live_run_bundle(_bundle_base()).smalln_ledger is None
+
+
+def test_live_run_bundle_smalln_ledger_illegal_forms_refuse() -> None:
+    with pytest.raises(ValidationError, match="literal 'absent'"):
+        validate_live_run_bundle({
+            **_bundle_base(), "smalln_ledger": "missing",
+        })
+    with pytest.raises(ValidationError, match="never {}"):
+        validate_live_run_bundle({**_bundle_base(), "smalln_ledger": {}})
+    with pytest.raises(ValidationError):
+        validate_live_run_bundle({**_bundle_base(), "smalln_ledger": 7})

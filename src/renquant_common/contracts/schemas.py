@@ -208,6 +208,19 @@ class LiveRunBundle(BaseModel):
     #: the block cannot be the thing that enforces it.
     wf_gate_provenance: dict[str, object] | None = None
 
+    #: orch#769 item 11 (2026-08-04): BOTH parity producers attach a free-form
+    #: run-metadata dict; it traveled the validated path UNCOVERED because
+    #: pydantic's ``extra="ignore"`` silently drops undeclared keys — the same
+    #: measured failure class as ``wf_gate_provenance``'s field note. Typed so a
+    #: malformed value REFUSES instead of validating clean. ``None`` = this
+    #: producer carries none.
+    metadata: dict[str, object] | None = None
+    #: The bridge producer's §3 small-N eligibility ledger (pipeline#207):
+    #: a non-empty dict block, or the LITERAL ``"absent"`` for pre-#207
+    #: pipelines (that absence is explicit by amendment — never an error).
+    #: ``None`` = a producer that does not carry the field at all (native).
+    smalln_ledger: dict[str, object] | str | None = None
+
     @model_validator(mode="after")
     def _validate_live_bundle_contract(self) -> "LiveRunBundle":
         if self.schema_version != 1:
@@ -232,6 +245,22 @@ class LiveRunBundle(BaseModel):
                     "A block that cannot say WHICH of 'no artifact', 'artifact "
                     "without a stamp' or 'stamped' it is records nothing usable."
                 )
+        if self.metadata is not None and not self.metadata:
+            raise ValueError(
+                "LiveRunBundle metadata must be a non-empty dict when present "
+                "(a producer with nothing to say passes None, not {})"
+            )
+        if isinstance(self.smalln_ledger, str) and self.smalln_ledger != "absent":
+            raise ValueError(
+                "LiveRunBundle smalln_ledger string form must be the literal "
+                f"'absent' (pipeline#207 explicit-absence sentinel); got "
+                f"{self.smalln_ledger!r}"
+            )
+        if isinstance(self.smalln_ledger, dict) and not self.smalln_ledger:
+            raise ValueError(
+                "LiveRunBundle smalln_ledger dict form must be non-empty — "
+                "the explicit-absence state is the literal 'absent', never {}"
+            )
         return self
 
 

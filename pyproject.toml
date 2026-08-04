@@ -28,7 +28,7 @@ name = "renquant-common"
 # renquant-pipeline#206). No root-export change; snapshot version updated
 # in the same PR. 0.13.0 added ``renquant_common.pair_slug`` (crypto RFC
 # D-C1).
-version = "0.15.1"
+version = "0.16.0"
 description = "Shared RenQuant contracts and pipeline primitives."
 readme = "README.md"
 requires-python = ">=3.10"
