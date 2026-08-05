@@ -28,6 +28,8 @@ from __future__ import annotations
 import base64
 import logging
 import os
+import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Iterable, Mapping
@@ -40,6 +42,38 @@ DEFAULT_TOPIC = "renquant"
 #: Standardized POST timeout. The audited copies used 5 s everywhere except
 #: one 10 s outlier (backtesting); 5 s is the canon.
 DEFAULT_TIMEOUT_SECONDS = 5.0
+
+#: Attempts per notification, including the first. A send that times out is a LOST
+#: ALARM, and this sender had none: measured 2026-08-05 on the operator's fleet,
+#: `run-surface-drift` and `rq105-liveness` both recorded
+#: `ntfy send failed … The read operation timed out` — the monitor did its job, found a
+#: real problem, and the page evaporated on one flaky socket.
+#:
+#: RETRY IS ONLY CORRECT FOR TRANSIENTS, and the distinction is the whole design: a
+#: timeout or a 5xx is worth another go; a 4xx is the request being wrong and repeating
+#: it just triples the wrongness. `_is_transient` draws that line, and a non-transient
+#: failure still returns immediately.
+SEND_ATTEMPTS = 3
+
+#: Backoff between attempts. Bounded on purpose: this runs inside monitors that are
+#: themselves on a schedule, so the worst case must stay small — 3 attempts add at most
+#: ~3s of latency before the same `False` the caller already handled.
+SEND_BACKOFF_SECONDS = (1.0, 2.0)
+
+
+def _is_transient(exc: BaseException) -> bool:
+    """Would trying again plausibly succeed?
+
+    TRUE for timeouts, connection failures and 5xx — the network or the far side was
+    briefly unavailable. FALSE for 4xx: a malformed request, a bad topic or a rejected
+    header is wrong in a way repetition cannot fix, and retrying it would turn one
+    useless send into three.
+    """
+    if isinstance(exc, urllib.error.HTTPError):
+        return 500 <= int(exc.code) < 600
+    if isinstance(exc, urllib.error.URLError):
+        return True                      # DNS / refused / unreachable
+    return isinstance(exc, (TimeoutError, OSError))
 
 _ENV_TRUTHY = frozenset({"1", "true", "yes", "on"})
 
@@ -164,12 +198,33 @@ def send(
             headers=headers,
             method="POST",
         )
-        urllib.request.urlopen(request, timeout=timeout).read()
-        return True
+        last: BaseException | None = None
+        for attempt in range(1, SEND_ATTEMPTS + 1):
+            try:
+                urllib.request.urlopen(request, timeout=timeout).read()
+                if attempt > 1:
+                    # SAY SO. A silent recovery hides how flaky the path is, and the
+                    # next person sizing the problem would measure zero.
+                    log.warning("ntfy send succeeded on attempt %d/%d (title=%r)",
+                                attempt, SEND_ATTEMPTS, title)
+                return True
+            except Exception as exc:  # noqa: BLE001 — never raise into a monitor
+                last = exc
+                if attempt >= SEND_ATTEMPTS or not _is_transient(exc):
+                    break
+                delay = SEND_BACKOFF_SECONDS[min(attempt - 1,
+                                                 len(SEND_BACKOFF_SECONDS) - 1)]
+                log.warning(
+                    "ntfy send attempt %d/%d failed (title=%r): %s — retrying in %.1fs",
+                    attempt, SEND_ATTEMPTS, title, exc, delay)
+                time.sleep(delay)
+        raise last if last is not None else RuntimeError("send failed with no exception")
     except Exception as exc:  # noqa: BLE001 — never raise into a monitor
         _send_failures += 1
         log.warning(
-            "ntfy send failed (failure #%d in this process, title=%r): %s",
+            "ntfy send failed after %d attempt(s) (failure #%d in this process, "
+            "title=%r): %s",
+            SEND_ATTEMPTS if _is_transient(exc) else 1,
             _send_failures,
             title,
             exc,
