@@ -20,6 +20,19 @@ class _FakeResponse:
         return b"{}"
 
 
+@pytest.fixture(autouse=True)
+def _no_real_backoff(monkeypatch):
+    """Zero the retry backoff for EVERY test in this module.
+
+    Retries landed 2026-08-05 (a timeout was losing alarms). Three pre-existing
+    failure-path tests immediately got 3s slower each, because a failure now costs
+    1s + 2s of real sleeping — a 9s tax on the suite for no added coverage. Autouse
+    rather than per-test: the next failure-path test written here would otherwise pay
+    it silently too.
+    """
+    monkeypatch.setattr(notify.time, "sleep", lambda _s: None)
+
+
 @pytest.fixture()
 def clean_env(monkeypatch):
     for var in ("NTFY_TOPIC", "RENQUANT_NO_NOTIFY", "RQ_ROOT"):
@@ -197,3 +210,77 @@ def test_positional_poster_compat(capture):
     poster = notify.send
     assert poster("t", "b", "topic") is True
     assert isinstance(poster("t", "b", "topic"), bool)
+
+
+# ---------------------------------------------------------------------------
+# transient retry (operator-reported 2026-08-05: a lost alarm)
+# ---------------------------------------------------------------------------
+#
+# Measured on the fleet that day: `run-surface-drift` and `rq105-liveness` both logged
+#     ntfy send failed (failure #1 in this process, …): The read operation timed out
+# The monitors did their job, found real problems, and the pages evaporated on one
+# flaky socket. This sender had exactly one attempt and no retry — so a transient
+# network blip and a silenced fleet were the same observable outcome.
+
+
+@pytest.fixture()
+def flaky(clean_env, monkeypatch):
+    """urlopen that fails `n` times with `exc`, then succeeds. Counts attempts."""
+    state = {"calls": 0}
+
+    def make(fail_times: int, exc: BaseException):
+        def fake_urlopen(request, timeout=None):
+            state["calls"] += 1
+            if state["calls"] <= fail_times:
+                raise exc
+            return _FakeResponse()
+        monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+        return state
+
+    return make
+
+
+def test_a_timeout_is_RETRIED_and_the_alarm_survives(flaky):
+    """The operator's report, inverted: two timeouts must not lose the page."""
+    state = flaky(2, TimeoutError("The read operation timed out"))
+    assert notify.send("T", "B", "topic") is True
+    assert state["calls"] == 3
+
+
+def test_retries_are_BOUNDED(flaky):
+    """A dead network must not hang a monitor that is itself on a schedule."""
+    state = flaky(99, TimeoutError("The read operation timed out"))
+    assert notify.send("T", "B", "topic") is False
+    assert state["calls"] == notify.SEND_ATTEMPTS
+
+
+def test_a_5xx_is_transient_and_retried(flaky):
+    state = flaky(1, urllib.error.HTTPError("u", 503, "busy", {}, None))
+    assert notify.send("T", "B", "topic") is True
+    assert state["calls"] == 2
+
+
+def test_a_4xx_is_NOT_retried(flaky):
+    """The line that makes this a fix rather than a hammer: a malformed request, a bad
+    topic or a rejected header is wrong in a way repetition cannot mend, and retrying
+    turns one useless send into three."""
+    state = flaky(99, urllib.error.HTTPError("u", 400, "bad request", {}, None))
+    assert notify.send("T", "B", "topic") is False
+    assert state["calls"] == 1
+
+
+def test_the_happy_path_adds_NO_attempts(flaky):
+    """Anti-vacuity: retries must not become latency on the common case."""
+    state = flaky(0, TimeoutError())
+    assert notify.send("T", "B", "topic") is True
+    assert state["calls"] == 1
+
+
+def test_a_recovered_send_SAYS_it_recovered(flaky, caplog):
+    """A silent recovery hides how flaky the path is; the next person sizing the
+    problem would measure zero."""
+    import logging
+    caplog.set_level(logging.WARNING)
+    flaky(1, TimeoutError("boom"))
+    assert notify.send("T", "B", "topic") is True
+    assert any("succeeded on attempt 2" in r.getMessage() for r in caplog.records)
