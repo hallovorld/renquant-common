@@ -1,4 +1,4 @@
-# ntfy bodies are capped so no alert ever arrives as an attachment   (PR #TBD)
+# ntfy bodies are capped so no alert ever arrives as an attachment   (PR #44)
 
 STATUS:    delivered — one cap at the fleet's single Python send site.
 WHAT:      `renquant_common.notify.send` now caps the POSTed body at
