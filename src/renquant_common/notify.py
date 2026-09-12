@@ -60,6 +60,18 @@ SEND_ATTEMPTS = 3
 #: ~3s of latency before the same `False` the caller already handled.
 SEND_BACKOFF_SECONDS = (1.0, 2.0)
 
+#: Hard cap on the POSTed body, in UTF-8 BYTES. ntfy.sh converts any message
+#: whose body exceeds its 4096-byte ``message-size-limit`` into a ``.txt``
+#: ATTACHMENT — the phone then shows a file icon instead of the alert text, and
+#: the operator has to tap through to read what is wrong. Measured 2026-09-12:
+#: the ``rq104 DEGRADED`` sentinel body on 09-11 was 4,617 bytes, so it arrived
+#: as an attachment. Every Python sender in the fleet funnels through ``send``
+#: (campaign B6), so capping HERE is the one place that makes auto-attachments
+#: impossible fleet-wide. 3800 leaves headroom under 4096 for the marker and
+#: for any server-side accounting the limit applies to.
+MAX_BODY_BYTES = 3800
+_TRUNCATION_MARKER = "\n… [truncated {dropped} bytes — full text is in the sender's log]"
+
 
 def _is_transient(exc: BaseException) -> bool:
     """Would trying again plausibly succeed?
@@ -160,6 +172,28 @@ def encode_header(value: str) -> str:
         return f"=?UTF-8?B?{wrapped}?="
 
 
+def truncate_body(body: str, limit: int = MAX_BODY_BYTES) -> str:
+    """Return ``body`` capped at ``limit`` UTF-8 bytes, marker included.
+
+    Pure and idempotent. Cuts on a character boundary (never mid-codepoint, so a
+    Chinese or emoji body cannot be turned into invalid UTF-8), and the marker
+    states exactly how many bytes were dropped so the reader knows the text is
+    partial and where the rest lives. A body already under the limit is returned
+    byte-identical — this must never rewrite an alert that fits.
+    """
+    text = str(body)
+    raw = text.encode("utf-8")
+    if len(raw) <= limit:
+        return text
+    # Reserve room for the marker; the dropped-byte count has at most 7 digits
+    # here and the marker is ASCII except for the ellipsis and em dash.
+    marker_probe = _TRUNCATION_MARKER.format(dropped=len(raw))
+    keep = max(0, limit - len(marker_probe.encode("utf-8")))
+    head = raw[:keep].decode("utf-8", errors="ignore")   # boundary-safe cut
+    dropped = len(raw) - len(head.encode("utf-8"))
+    return head + _TRUNCATION_MARKER.format(dropped=dropped)
+
+
 def send(
     title: str,
     body: str,
@@ -192,9 +226,14 @@ def send(
         if tags is not None:
             raw_tags = tags if isinstance(tags, str) else ",".join(str(t) for t in tags)
             headers["Tags"] = encode_header(raw_tags)
+        payload = truncate_body(body)
+        if payload is not body and len(str(body).encode("utf-8")) > MAX_BODY_BYTES:
+            log.warning("ntfy body capped to %d bytes (title=%r, original %d bytes) "
+                        "so ntfy does not convert it into an attachment",
+                        MAX_BODY_BYTES, title, len(str(body).encode("utf-8")))
         request = urllib.request.Request(
             f"https://ntfy.sh/{resolved}",
-            data=str(body).encode("utf-8"),
+            data=payload.encode("utf-8"),
             headers=headers,
             method="POST",
         )
@@ -235,6 +274,8 @@ def send(
 __all__ = [
     "DEFAULT_TIMEOUT_SECONDS",
     "DEFAULT_TOPIC",
+    "MAX_BODY_BYTES",
+    "truncate_body",
     "notifications_suppressed",
     "resolve_topic",
     "send",
