@@ -284,3 +284,56 @@ def test_a_recovered_send_SAYS_it_recovered(flaky, caplog):
     flaky(1, TimeoutError("boom"))
     assert notify.send("T", "B", "topic") is True
     assert any("succeeded on attempt 2" in r.getMessage() for r in caplog.records)
+
+
+# ── body cap: ntfy converts >4096-byte bodies into ATTACHMENTS ─────────────
+# Measured 2026-09-12: the rq104 DEGRADED sentinel body on 09-11 was 4,617 bytes
+# and arrived on the operator's phone as a .txt attachment instead of text.
+# Every Python sender funnels through send(), so the cap lives here.
+
+def test_body_over_the_cap_is_sent_under_ntfys_attachment_limit(capture):
+    body = "x" * 6000
+    assert notify.send("t", body, "topic") is True
+    (request, _), = capture
+    sent = request.data
+    assert len(sent) <= notify.MAX_BODY_BYTES < 4096
+    assert sent.decode("utf-8").endswith("bytes — full text is in the sender's log]")
+
+
+def test_body_under_the_cap_is_byte_identical(capture):
+    body = "short alert\nwith two lines"
+    notify.send("t", body, "topic")
+    (request, _), = capture
+    assert request.data == body.encode("utf-8")
+
+
+def test_the_measured_offender_shape_no_longer_attaches(capture):
+    # 4,617 bytes of the real sentinel's shape: many "com.renquant.x (last exit 1) [ack…]"
+    body = ", ".join(f"com.renquant.job{i} (last exit 1) [ack text {'y' * 60}]" for i in range(60))
+    assert len(body.encode("utf-8")) > 4096
+    notify.send("rq104 DEGRADED: 2 issue(s)", body, "topic")
+    (request, _), = capture
+    assert len(request.data) < 4096
+
+
+def test_truncation_never_splits_a_multibyte_character():
+    body = "告警" * 3000                      # 3 bytes per char, 18,000 bytes
+    out = notify.truncate_body(body)
+    out.encode("utf-8")                       # would raise on a broken codepoint
+    assert len(out.encode("utf-8")) <= notify.MAX_BODY_BYTES
+    assert out.startswith("告警")
+
+
+def test_marker_names_the_dropped_byte_count_exactly():
+    body = "a" * 5000
+    out = notify.truncate_body(body)
+    kept = len(out.split("\n… [truncated ")[0].encode("utf-8"))
+    dropped = int(out.split("[truncated ")[1].split(" bytes")[0])
+    assert kept + dropped == 5000
+
+
+def test_truncate_body_is_idempotent_and_pure():
+    body = "z" * 9000
+    once = notify.truncate_body(body)
+    assert notify.truncate_body(once) == once
+    assert notify.truncate_body("fits") == "fits"
